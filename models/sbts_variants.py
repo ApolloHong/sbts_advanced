@@ -541,7 +541,7 @@ class JDSBTSF(JDSBTS):
         # Compute returns
         returns = np.diff(generated_paths, axis=1)
         if returns.ndim == 3:
-            returns = returns[:, :, 0]  # Use first feature
+            returns = np.mean(returns, axis=2)
         
         return analyze_volatility_clustering(
             returns,

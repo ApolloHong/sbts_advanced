@@ -6,7 +6,8 @@ Contains all time series generation models.
 Models:
     - JD-SBTS: Jump-Diffusion Schrödinger Bridge (our method)
     - JD-SBTS-F: JD-SBTS with Feedback mechanism (our innovation)
-    - LightSB: Light Schrödinger Bridge with variance annealing
+    - LightSB: Window-level Light Schrödinger Bridge
+    - PathLightSB: Path-level Light Schrödinger Bridge
     - Numba-SB: Numba-accelerated Markovian SB
     - TimeGAN: Time-series Generative Adversarial Network
     - Diffusion-TS: Diffusion-based time series generation
@@ -18,7 +19,7 @@ Author: Manus AI
 
 from models.base import BaseTimeSeriesGenerator
 from models.sbts_variants import JDSBTS, JDSBTSF
-from models.lightsb import LightSB
+from models.lightsb import LightSB, PathLightSB
 from models.timegan_baseline import TimeGAN
 from models.diffusion_ts_baseline import DiffusionTS
 from models.rnn_baseline import RNNBaseline
@@ -35,6 +36,7 @@ __all__ = [
     
     # Baselines
     'LightSB',
+    'PathLightSB',
 
     'TimeGAN',
     'DiffusionTS',

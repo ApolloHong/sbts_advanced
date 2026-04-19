@@ -398,9 +398,9 @@ def plot_model_comparison_grid(
     if axes.ndim == 1:
         axes = axes.reshape(n_rows, n_cols)
     
-    # Flatten real data if needed
+    # Collapse multifeature paths for path overlays by averaging features.
     if real_data.ndim == 3:
-        real_flat = real_data[:, :, 0]
+        real_flat = np.mean(real_data, axis=2)
     else:
         real_flat = real_data
     
@@ -412,9 +412,9 @@ def plot_model_comparison_grid(
         
         style = _get_style(name)
         
-        # Flatten if needed
+        # Collapse multifeature generated paths the same way as real paths.
         if gen_data.ndim == 3:
-            gen_flat = gen_data[:, :, 0]
+            gen_flat = np.mean(gen_data, axis=2)
         else:
             gen_flat = gen_data
         

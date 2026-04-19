@@ -13,7 +13,7 @@ Metrics Categories:
 Author: Manus AI
 """
 
-from metrics.discriminative_score import discriminative_score_metrics
+from metrics.discriminative_score import discriminative_score_metrics, discriminative_score_cnn_metrics
 from metrics.predictive_score import predictive_score_metrics
 from metrics.statistical_metrics import compute_all_metrics
 from metrics.numba_metrics import (
@@ -28,6 +28,7 @@ from metrics.numba_metrics import (
 __all__ = [
     # Original metrics
     'discriminative_score_metrics',
+    'discriminative_score_cnn_metrics',
     'predictive_score_metrics', 
     'compute_all_metrics',
     

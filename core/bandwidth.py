@@ -4,10 +4,10 @@ import logging
 import optuna
 import sys
 
-# 获取项目统一的 logger
+# Use the project-wide logger.
 logger = logging.getLogger("SBTS")
 
-# 抑制 Optuna 自身的繁琐日志，只保留 Warning 以上，除非我们需要调试
+# Silence Optuna's verbose logs unless debugging is needed.
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 def silverman_rule(data):
@@ -16,7 +16,7 @@ def silverman_rule(data):
     """
     n = len(data)
     sigma = np.std(data)
-    # 防止 sigma 为 0
+    # Avoid a zero bandwidth when the sample variance is degenerate.
     if sigma < 1e-8: sigma = 1.0
     h = 1.06 * sigma * (n ** (-0.2))
     return h
@@ -29,7 +29,7 @@ class BandwidthSelector:
         self.n_trials = n_trials
         self.n_splits = n_splits
         self.best_h = None
-        self.study = None # 保存 Optuna 的 study 对象
+        self.study = None # Store the Optuna study object.
 
     def compute_terminal_mse(self, generated_terminal, actual_terminal):
         """

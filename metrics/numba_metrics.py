@@ -337,34 +337,44 @@ def compute_all_metrics_numba(
     Returns:
         Dictionary of metric values
     """
-    # Ensure 2D for simplicity (flatten features if needed)
+    real_data = np.asarray(real_data)
+    gen_data = np.asarray(gen_data)
+
+    # Keep features separate for multivariate series. Earlier versions flattened
+    # (time, feature) into one axis, which mixed time increments with adjacent
+    # feature differences.
     if real_data.ndim == 3:
         n_samples, seq_len, n_features = real_data.shape
-        real_flat = real_data.reshape(n_samples, -1)
-        gen_flat = gen_data.reshape(gen_data.shape[0], -1)
+        real_returns_by_feature = np.diff(real_data, axis=1).reshape(-1, n_features)
+        gen_returns_by_feature = np.diff(gen_data, axis=1).reshape(-1, n_features)
+        real_acf_series = np.diff(real_data, axis=1).transpose(0, 2, 1).reshape(-1, seq_len - 1)
+        gen_acf_series = np.diff(gen_data, axis=1).transpose(0, 2, 1).reshape(-1, seq_len - 1)
+        real_marginal_by_feature = real_data.reshape(-1, n_features)
+        gen_marginal_by_feature = gen_data.reshape(-1, n_features)
     else:
-        real_flat = real_data
-        gen_flat = gen_data
         n_features = 1
+        real_returns_by_feature = np.diff(real_data, axis=1).reshape(-1, 1)
+        gen_returns_by_feature = np.diff(gen_data, axis=1).reshape(-1, 1)
+        real_acf_series = np.diff(real_data, axis=1)
+        gen_acf_series = np.diff(gen_data, axis=1)
+        real_marginal_by_feature = real_data.reshape(-1, 1)
+        gen_marginal_by_feature = gen_data.reshape(-1, 1)
     
     metrics = {}
     
-    # Wasserstein Distance (on flattened returns)
-    real_returns = np.diff(real_flat, axis=1).flatten()
-    gen_returns = np.diff(gen_flat, axis=1).flatten()
-    
-    metrics['wasserstein_distance'] = wasserstein_distance_1d_numba(
-        real_returns.astype(np.float64),
-        gen_returns.astype(np.float64)
+    # Wasserstein distance averaged over feature-wise return distributions.
+    metrics['wasserstein_distance'] = wasserstein_distance_multivariate_numba(
+        real_returns_by_feature.astype(np.float64),
+        gen_returns_by_feature.astype(np.float64)
     )
     
-    # ACF MSE (average over samples)
+    # ACF MSE averaged over all sample-feature return series.
     real_acf_batch = acf_batch_numba(
-        np.diff(real_flat, axis=1).astype(np.float64),
+        real_acf_series.astype(np.float64),
         max_acf_lag
     )
     gen_acf_batch = acf_batch_numba(
-        np.diff(gen_flat, axis=1).astype(np.float64),
+        gen_acf_series.astype(np.float64),
         max_acf_lag
     )
     
@@ -386,18 +396,27 @@ def compute_all_metrics_numba(
     else:
         metrics['correlation_distance'] = 0.0
     
-    # Marginal statistics comparison
-    real_means, real_stds, real_skews, real_kurts = marginal_statistics_batch_numba(
-        real_flat.astype(np.float64)
-    )
-    gen_means, gen_stds, gen_skews, gen_kurts = marginal_statistics_batch_numba(
-        gen_flat.astype(np.float64)
-    )
-    
-    metrics['mean_diff'] = np.abs(np.mean(real_means) - np.mean(gen_means))
-    metrics['std_diff'] = np.abs(np.mean(real_stds) - np.mean(gen_stds))
-    metrics['skewness_diff'] = np.abs(np.mean(real_skews) - np.mean(gen_skews))
-    metrics['kurtosis_diff'] = np.abs(np.mean(real_kurts) - np.mean(gen_kurts))
+    # Marginal statistics comparison, averaged over features.
+    mean_diffs = []
+    std_diffs = []
+    skew_diffs = []
+    kurt_diffs = []
+    for feature_idx in range(n_features):
+        real_mean, real_std, real_skew, real_kurt = marginal_statistics_numba(
+            real_marginal_by_feature[:, feature_idx].astype(np.float64)
+        )
+        gen_mean, gen_std, gen_skew, gen_kurt = marginal_statistics_numba(
+            gen_marginal_by_feature[:, feature_idx].astype(np.float64)
+        )
+        mean_diffs.append(abs(real_mean - gen_mean))
+        std_diffs.append(abs(real_std - gen_std))
+        skew_diffs.append(abs(real_skew - gen_skew))
+        kurt_diffs.append(abs(real_kurt - gen_kurt))
+
+    metrics['mean_diff'] = float(np.mean(np.asarray(mean_diffs)))
+    metrics['std_diff'] = float(np.mean(np.asarray(std_diffs)))
+    metrics['skewness_diff'] = float(np.mean(np.asarray(skew_diffs)))
+    metrics['kurtosis_diff'] = float(np.mean(np.asarray(kurt_diffs)))
     
     return metrics
 
@@ -500,14 +519,36 @@ def compute_stylized_facts_numba(
     Compute all stylized facts metrics.
     
     Args:
-        returns: Return series (1D or 2D)
+        returns: Return series. Supported shapes are 1D, 2D, or
+            (n_samples, seq_len, n_features). For 3D input, metrics are
+            computed feature-wise and averaged.
     
     Returns:
         Dictionary of stylized facts scores
     """
+    returns = np.asarray(returns)
+
+    if returns.ndim == 3:
+        n_features = returns.shape[-1]
+        volatility = np.zeros(n_features)
+        fat_tails = np.zeros(n_features)
+        leverage = np.zeros(n_features)
+
+        for feature_idx in range(n_features):
+            feature_returns = returns[:, :, feature_idx].flatten().astype(np.float64)
+            volatility[feature_idx] = volatility_clustering_score_numba(feature_returns)
+            fat_tails[feature_idx] = fat_tails_score_numba(feature_returns)
+            leverage[feature_idx] = leverage_effect_score_numba(feature_returns)
+
+        return {
+            'volatility_clustering': float(np.mean(volatility)),
+            'fat_tails': float(np.mean(fat_tails)),
+            'leverage_effect': float(np.mean(leverage))
+        }
+
     if returns.ndim == 2:
         returns = returns.flatten()
-    
+
     returns = returns.astype(np.float64)
     
     return {

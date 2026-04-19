@@ -43,9 +43,28 @@ def _ensure_dir(path):
     if dirname:
         os.makedirs(dirname, exist_ok=True)
 
+def _as_plot_series(paths):
+    """Collapse multifeature paths to one display series by averaging features."""
+    paths = np.asarray(paths)
+    if paths.ndim == 3:
+        return np.mean(paths, axis=2)
+    return paths
+
+def _terminal_values(paths):
+    """Return terminal values across all features for distribution plots."""
+    paths = np.asarray(paths)
+    if paths.ndim == 3:
+        return paths[:, -1, :].reshape(-1)
+    return paths[:, -1]
+
+def _returns_values(paths):
+    """Return flattened time returns across all features."""
+    paths = np.asarray(paths)
+    return np.diff(paths, axis=1).reshape(-1)
+
 def _calc_autocorr(paths, max_lag=20):
     if paths.ndim == 3:
-        series = paths[:, :, 0] 
+        series = paths.reshape(-1, paths.shape[1])
     else:
         series = paths
         
@@ -123,12 +142,14 @@ def plot_comprehensive_comparison(time_grid, real_returns, results_store, real_p
             style = STYLE_MAP.get(method, {'color':'blue'})
             gen_data = gen_prices_dict.get(method)
             
-            ax.plot(real_prices[:50, :, 0].T, color='gray', alpha=0.1, linewidth=0.8)
+            real_plot = _as_plot_series(real_prices)
+            ax.plot(real_plot[:50].T, color='gray', alpha=0.1, linewidth=0.8)
             if gen_data is not None and not np.isnan(gen_data).any():
-                ax.plot(gen_data[:15, :, 0].T, color=style['color'], alpha=0.6, linewidth=1.0)
-                ax.plot(np.mean(gen_data, axis=0)[:,0], color=style['color'], linewidth=2.5, label=f'{method} Mean')
+                gen_plot = _as_plot_series(gen_data)
+                ax.plot(gen_plot[:15].T, color=style['color'], alpha=0.6, linewidth=1.0)
+                ax.plot(np.mean(gen_plot, axis=0), color=style['color'], linewidth=2.5, label=f'{method} Mean')
             
-            ax.plot(np.mean(real_prices, axis=0)[:,0], 'k--', linewidth=2.5, label='Real Mean')
+            ax.plot(np.mean(real_plot, axis=0), 'k--', linewidth=2.5, label='Real Mean')
             ax.set_title(f"Price Reconstruction: Real vs {method}", fontweight='bold')
             ax.legend(loc='upper left')
             
@@ -137,13 +158,13 @@ def plot_comprehensive_comparison(time_grid, real_returns, results_store, real_p
             ax.set_ylim(y_min - margin, y_max + margin)
 
     ax_dens = axes[1, 0]
-    sns.kdeplot(real_returns[:, -1, 0], ax=ax_dens, color='gray', fill=True, alpha=0.3, label='Real')
+    sns.kdeplot(_terminal_values(real_returns), ax=ax_dens, color='gray', fill=True, alpha=0.3, label='Real')
     
     for method in methods:
         paths = results_store[method]
         if np.isnan(paths).any(): continue
         style = STYLE_MAP.get(method, {'color':'blue', 'ls':'-'})
-        sns.kdeplot(paths[:, -1, 0], ax=ax_dens, color=style['color'], linestyle=style['ls'], linewidth=2, label=method)
+        sns.kdeplot(_terminal_values(paths), ax=ax_dens, color=style['color'], linestyle=style['ls'], linewidth=2, label=method)
     
     ax_dens.set_title("Log-Returns Density (Fat Tails Check)", fontweight='bold')
     ax_dens.legend()
@@ -263,7 +284,7 @@ def plot_volatility_surface(vol_model, data_range, T=1.0, save_path="outputs/vol
     if hasattr(vol_model, 'get_surface'):
         try:
             t_grid_model, x_grid_model, vol_surface = vol_model.get_surface()
-            Vol_mesh = vol_surface[:, :, 0] if vol_surface.ndim == 3 else vol_surface
+            Vol_mesh = np.mean(vol_surface, axis=2) if vol_surface.ndim == 3 else vol_surface
             T_mesh, X_mesh = np.meshgrid(t_grid_model, x_grid_model, indexing='ij')
 
             fig, ax = plt.subplots(figsize=(8, 6))
@@ -589,21 +610,23 @@ def plot_sota_comparison(real_data, results_store, metrics_store, save_path="out
         ax = fig.add_subplot(3, 3, i + 1)
         style = EXTENDED_STYLE_MAP.get(method, {'color': 'blue', 'ls': '-'})
         gen_data = results_store[method]
+        real_plot = _as_plot_series(real_data)
+        gen_plot = _as_plot_series(gen_data)
         
         # Plot real paths (gray background)
-        n_plot = min(30, len(real_data))
+        n_plot = min(30, len(real_plot))
         for j in range(n_plot):
-            ax.plot(real_data[j, :, 0], color='gray', alpha=0.1, linewidth=0.5)
+            ax.plot(real_plot[j], color='gray', alpha=0.1, linewidth=0.5)
         
         # Plot generated paths
         if not np.isnan(gen_data).any():
-            n_gen_plot = min(15, len(gen_data))
+            n_gen_plot = min(15, len(gen_plot))
             for j in range(n_gen_plot):
-                ax.plot(gen_data[j, :, 0], color=style['color'], alpha=0.4, linewidth=0.8)
+                ax.plot(gen_plot[j], color=style['color'], alpha=0.4, linewidth=0.8)
             
             # Mean paths
-            ax.plot(np.mean(real_data[:, :, 0], axis=0), 'k--', linewidth=2, label='Real Mean')
-            ax.plot(np.mean(gen_data[:, :, 0], axis=0), color=style['color'], linewidth=2, label=f'{method} Mean')
+            ax.plot(np.mean(real_plot, axis=0), 'k--', linewidth=2, label='Real Mean')
+            ax.plot(np.mean(gen_plot, axis=0), color=style['color'], linewidth=2, label=f'{method} Mean')
         
         ax.set_title(f'{method}', fontweight='bold', fontsize=12)
         ax.set_xlabel('Time Step')
@@ -616,14 +639,14 @@ def plot_sota_comparison(real_data, results_store, metrics_store, save_path="out
     
     # 2.1 Terminal Distribution
     ax_term = fig.add_subplot(3, 3, 4)
-    sns.kdeplot(real_data[:, -1, 0], ax=ax_term, color='black', fill=True, alpha=0.3, label='Real', linewidth=2)
+    sns.kdeplot(_terminal_values(real_data), ax=ax_term, color='black', fill=True, alpha=0.3, label='Real', linewidth=2)
     
     for method in methods:
         gen_data = results_store[method]
         if np.isnan(gen_data).any():
             continue
         style = EXTENDED_STYLE_MAP.get(method, {'color': 'blue', 'ls': '-'})
-        sns.kdeplot(gen_data[:, -1, 0], ax=ax_term, color=style['color'], 
+        sns.kdeplot(_terminal_values(gen_data), ax=ax_term, color=style['color'], 
                     linestyle=style['ls'], linewidth=2, label=method)
     
     ax_term.set_title('Terminal Distribution', fontweight='bold')
@@ -634,7 +657,7 @@ def plot_sota_comparison(real_data, results_store, metrics_store, save_path="out
     ax_ret = fig.add_subplot(3, 3, 5)
     
     # Compute returns
-    real_returns = np.diff(real_data[:, :, 0], axis=1).flatten()
+    real_returns = _returns_values(real_data)
     sns.kdeplot(real_returns, ax=ax_ret, color='black', fill=True, alpha=0.3, label='Real', linewidth=2)
     
     for method in methods:
@@ -642,7 +665,7 @@ def plot_sota_comparison(real_data, results_store, metrics_store, save_path="out
         if np.isnan(gen_data).any():
             continue
         style = EXTENDED_STYLE_MAP.get(method, {'color': 'blue', 'ls': '-'})
-        gen_returns = np.diff(gen_data[:, :, 0], axis=1).flatten()
+        gen_returns = _returns_values(gen_data)
         sns.kdeplot(gen_returns, ax=ax_ret, color=style['color'], 
                     linestyle=style['ls'], linewidth=2, label=method)
     

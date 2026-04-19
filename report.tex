@@ -1,0 +1,668 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\graphicspath{{./}{results/}}
+
+\title{\textbf{Jump-Diffusion Schrodinger Bridges for Financial Time-Series Generation}}
+\author{
+Lizhan Hong \and Sheng Wan \and Haoyu Luo \and Cyprien Kutek \and Dimitri Krawczyk\\
+\small Projet Scientifique Collectif, Ecole Polytechnique\\
+\small Supervised by Prof. Huyen Pham
+}
+\date{Academic year 2025--2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report summarizes the implementation and experimental evaluation of a
+research codebase for financial time-series generation based on
+Schrodinger-bridge ideas, jump-diffusion stochastic differential equations, and
+modern neural baselines. The central objective is to generate realistic market
+paths that preserve distributional shape, temporal dependence, cross-feature
+correlation, and stylized facts such as heavy tails, volatility clustering, and
+leverage effects. The implemented model family, called JD-SBTS, decomposes the
+problem into jump detection, local volatility calibration, neural drift
+estimation, and Euler-Maruyama simulation. A feedback variant introduces an
+explicit stress process to amplify volatility after jumps. The benchmark also
+includes Light Schrodinger Bridge variants, TimeGAN, an autoregressive RNN, and
+a causal autoregressive Transformer. On the current QQQ stock benchmark
+(60-day windows, six OHLCV-style features, 512 evaluation samples), the base
+JD-SBTS model obtains the best aggregate rank, while the feedback variant
+JD-SBTS-F gives the best stylized-fact preservation. The results show that different
+evaluation criteria reward different modeling assumptions: autoregressive
+neural models reproduce short-horizon conditional dynamics well, whereas
+jump-diffusion bridge models better expose interpretable mechanisms for
+discontinuities and volatility response.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+Generating realistic financial time series is a difficult problem because market
+data are not well described by a single Gaussian diffusion. Even at daily
+frequency, price and return series display abrupt moves, non-Gaussian tails,
+serial dependence in volatility, asymmetric responses to shocks, and
+cross-sectional dependence between features such as open, high, low, close,
+adjusted close, and volume. These properties are important in downstream tasks:
+synthetic data used for risk analysis, stress testing, strategy backtesting, or
+forecasting must not only look plausible path by path, but must also preserve
+distributional and dynamic structure.
+
+The project studies this problem through the lens of Schrodinger bridges. A
+Schrodinger bridge can be viewed as a stochastic transport problem: among
+stochastic processes close to a reference dynamics, find a process whose
+endpoint marginals match observed distributions. This formulation is attractive
+for time-series generation because it combines probabilistic dynamics with
+distribution matching. However, financial time series also contain jumps and
+volatility feedback, which are not naturally captured by a simple Brownian
+reference. The codebase therefore develops jump-diffusion Schrodinger Bridge
+Time Series models, abbreviated JD-SBTS, and compares them with neural and
+potential-based alternatives.
+
+The main contributions of the experiment are:
+\begin{itemize}
+    \item a unified implementation of several time-series generators behind the
+    same \texttt{fit}/\texttt{generate} interface;
+    \item a jump-diffusion SBTS model with static jump detection, local
+    volatility calibration, LSTM drift estimation, and fast Euler generation;
+    \item feedback and neural-jump extensions that model post-jump volatility
+    amplification and data-dependent jump intensity;
+    \item LightSB, TimeGAN, diffusion, RNN, and Transformer baselines in the
+    same benchmark pipeline;
+    \item a fair-comparison notebook protocol using shared training windows,
+    shared evaluation subsets, and explicit generation-protocol labels.
+\end{itemize}
+
+The report focuses on the current maintained pipeline in \texttt{main.py},
+\texttt{models/factory.py}, and \texttt{main\_pipeline.ipynb}. The numerical
+tables use the latest saved output of the benchmark notebook for the QQQ stock
+dataset. Older result figures for Merton and Google-style experiments remain in
+the repository and are useful qualitative artifacts, but the main quantitative
+discussion below is based on the current QQQ benchmark.
+
+\section{Background}
+
+\subsection{Financial Time-Series Generation}
+
+Classical financial models often start from diffusion dynamics,
+\begin{equation}
+    dX_t = \mu(X_t,t)\,dt + \sigma(X_t,t)\,dW_t,
+\end{equation}
+where $\mu$ is a drift, $\sigma$ is a volatility coefficient, and $W_t$ is
+Brownian motion. This model is analytically convenient, but it is too smooth for
+many financial series. Empirical paths contain rare but large moves, and the
+variance of future returns often increases after a large shock. Merton's
+jump-diffusion model addresses part of this issue by adding a jump component:
+\begin{equation}
+    dX_t = \mu(X_t,t)\,dt + \sigma(X_t,t)\,dW_t + dJ_t,
+\end{equation}
+where $J_t$ is commonly driven by a Poisson process with random jump sizes.
+
+For generative modeling, the goal is not only to specify a plausible stochastic
+differential equation, but also to learn its components from data and generate
+new paths whose distribution resembles the empirical one. Neural generative
+models such as TimeGAN, diffusion models, recurrent networks, and Transformers
+provide flexible alternatives. Their strength is representation learning, while
+their weakness is often interpretability: a good sample may not reveal which
+financial mechanism produced it. The JD-SBTS family tries to keep a mechanistic
+SDE structure while still using neural components where they are useful.
+
+\subsection{Schrodinger Bridges}
+
+Let $R$ be a reference stochastic process on path space and let $\mu_0$ and
+\(\mu_1\) be two target marginal distributions. The static form of the
+Schrodinger bridge problem can be written as
+\begin{equation}
+    \pi^\star
+    =
+    \arg\min_{\pi \in \Pi(\mu_0,\mu_1)}
+    \mathrm{KL}(\pi \Vert R_{01}),
+\end{equation}
+where $\Pi(\mu_0,\mu_1)$ is the set of couplings with the required marginals
+and $R_{01}$ is the endpoint coupling induced by the reference process. The
+dynamic form searches for a path measure close to $R$ while matching endpoint
+constraints. For a Brownian reference, this can be interpreted as an
+entropy-regularized optimal transport problem.
+
+In practice, exact Schrodinger bridge solvers may be expensive in high
+dimension. Light Schrodinger Bridge methods simplify the problem by learning
+potential functions with a tractable parameterization. In this project, the
+window-level LightSB baseline treats each full time-series window as one
+high-dimensional point. A path-level LightSB variant also exists: it learns
+one-step bridges on augmented states $[X_t,t]\rightarrow[X_{t+1},t+\Delta t]$.
+This distinction matters because a flattened-window bridge is unconditional
+with respect to the initial value, while a path-level bridge can be conditioned
+on a real initial state.
+
+\section{Implemented Models}
+
+All active models are created through \texttt{models/factory.py}. Each model
+implements the same high-level API:
+\begin{equation}
+    \texttt{model.fit(data, time\_grid)}, \qquad
+    \texttt{model.generate(n\_samples, n\_steps, x0)}.
+\end{equation}
+This shared interface is essential for fair benchmarking because training,
+generation, and evaluation can be orchestrated by the same loop.
+
+\subsection{JD-SBTS: Jump-Diffusion SDE Framework}
+
+The JD-SBTS (Jump-Diffusion Schrödinger Bridge Time Series) model is the
+cornerstone of this research. It is formulated as a stochastic differential
+equation (SDE) with jumps:
+\begin{equation}
+    dX_t = \mu(X_t, t)dt + \sigma(X_t, t)dW_t + dJ_t,
+\end{equation}
+where $W_t$ is a standard Wiener process and $J_t$ is a compound Poisson process.
+The model follows a \textit{decoupled training} philosophy to ensure that each
+physical component is identified without interference.
+
+\paragraph{Jump Detection and Data Purification.}
+To prevent volatility estimators from "double counting" variance during extreme
+moves, the model first identifies jumps using a robust thresholding method:
+$|\Delta X_t| > k \cdot \text{Med}(|\Delta X|) \cdot \sqrt{\Delta t}$. Once
+flagged, jumps are removed, and the data is linearly interpolated to create a
+\textit{purified} continuous-path dataset for volatility and drift calibration.
+
+\paragraph{Local Volatility Calibration.}
+The diffusion coefficient $\sigma(X_t, t)$ is estimated from purified data. We
+implement a local volatility surface $\sigma(x,t)$ that captures the "volatility
+smile" and state-dependent heteroscedasticity using kernel-based non-parametric
+regression or state-grid interpolation.
+
+\paragraph{Neural Drift Estimation.}
+The drift term $\mu(X_t, t)$ represents the conditional expectation of the next
+move. While traditional models use linear or kernel drift, JD-SBTS employs an
+LSTM (Long Short-Term Memory) network to act as a deep drift estimator:
+\begin{equation}
+    \widehat{\mu}(X_t, t) = \text{LSTM}_{\theta}(\{X_s\}_{s \le t}).
+\end{equation}
+This allows the model to capture long-range dependencies and non-linear mean
+reversion that are common in financial regimes.
+
+\paragraph{Euler-Maruyama Simulation.}
+For path generation, we use a discretized Euler scheme. A critical addition is
+\textit{drift dampening}, where the neural drift is scaled by a factor $\eta \in (0,1)$
+to ensure long-term stability and prevent the model from over-reacting to
+historical noise during synthesis.
+
+\subsection{Feedback JD-SBTS (JD-SBTS-F)}
+
+The \texttt{jd\_sbts\_f} variant introduces an explicit mechanism for
+\textit{volatility clustering}. We model a latent stress process $S_t$ that
+evolves according to:
+\begin{equation}
+    dS_t = -\kappa S_t dt + \gamma |dJ_t|,
+\end{equation}
+where $\kappa$ is the decay rate and $\gamma$ is the sensitivity to jumps. The
+instantaneous volatility is then modulated as $\sigma_{f}(X_t, t) = \sigma(X_t, t)
+\sqrt{1 + S_t}$. This ensures that large jumps trigger a transient period of
+high volatility, matching the empirical "leverage effect" and clustering facts.
+
+\subsection{Light Schrödinger Bridge (LightSB)}
+
+Based on the recent work of Korotin et al. (ICLR 2024), LightSB provides a
+lightweight alternative to traditional Schrödinger Bridge solvers. Instead of
+solving the SDE directly, it learns a pair of Schrödinger potentials $(v, \widehat{v})$
+parameterized as a sum-exp of quadratic functions:
+\begin{equation}
+    v_{\theta}(x) = \sum_{k=1}^K \alpha_k \exp\left( -\frac{1}{2\epsilon} \|x - \mu_k\|_{S_k}^2 \right).
+\end{equation}
+The training objective is to maximize the log-likelihood of matching the target
+marginal distribution $\mu_1$ from the source $\mu_0$ under the reference
+measure. LightSB is particularly efficient because its conditional maps and
+drifts can be computed analytically from the learned potentials. We implement
+two versions: a window-level bridge (\texttt{lightsb}) and a sequential
+path-level bridge (\texttt{lightsb\_path}).
+
+\subsection{Deep Learning Baselines}
+
+\paragraph{TimeGAN.}
+A Generative Adversarial Network architecture specifically tailored for time
+series. It consists of four integrated networks: an embedding network, a
+recovery network, a generator, and a discriminator. Unlike standard GANs, it
+includes a \textit{supervised loss} that encourages the generator to capture the
+step-wise conditional distributions, preventing mode collapse.
+
+\paragraph{Autoregressive RNN and Transformer.}
+The \texttt{rnn} baseline uses a standard GRU/LSTM architecture for next-step
+prediction. The \texttt{transformer\_ar} utilizes the multi-head attention
+mechanism with causal masking to capture global dependencies across the entire
+window. Both are trained using Maximum Likelihood Estimation (MLE) and generate
+paths by recursive sampling.
+
+\subsection{Model Summary and Generation Protocol}
+
+\begin{table}[H]
+\centering
+\caption{Main models and generation protocols used by the benchmark.}
+\begin{tabular}{lll}
+\toprule
+Model & Main mechanism & Protocol in benchmark \\
+\midrule
+\texttt{jd\_sbts} & Jump-diffusion SBTS & Shared real initial state \\
+\texttt{jd\_sbts\_f} & JD-SBTS with stress feedback & Shared real initial state \\
+\texttt{lightsb} & Flattened-window potential bridge & Shared seed only \\
+\texttt{rnn} & Autoregressive recurrent network & Shared real prefix, length 20 \\
+\texttt{timegan} & Adversarial recurrent generator & Shared seed only \\
+\texttt{transformer\_ar} & Causal autoregressive Transformer & Shared real prefix, length 20 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Experimental Setup}
+
+\subsection{Datasets}
+
+The notebook supports both simulated and real datasets. The simulated datasets
+are Merton jump-diffusion, standard Ornstein-Uhlenbeck, and high-frequency
+Ornstein-Uhlenbeck paths. The main quantitative benchmark discussed here uses
+real stock data downloaded through Yahoo Finance.
+
+For the current run, the selected dataset is QQQ:
+\begin{itemize}
+    \item ticker: QQQ;
+    \item requested date range: 2004-01-01 to 2019-12-31;
+    \item actual date range in the saved data: 2004-01-02 to 2019-12-31;
+    \item valid rows: 4027;
+    \item features: High, Low, Open, Close, Adj Close, Volume;
+    \item window length: 60;
+    \item number of processed windows: 3968;
+    \item normalization: base-one normalization within each window.
+\end{itemize}
+
+The split is 70\% train, 15\% validation, and 15\% test, with shuffled split
+indices stored for reproducibility. The resulting shapes are:
+\begin{equation}
+    \text{train}: (2777,60,6), \quad
+    \text{validation}: (595,60,6), \quad
+    \text{test}: (596,60,6).
+\end{equation}
+The evaluation subset uses the first 512 windows from the test pool.
+
+\subsection{Training Configuration}
+
+The notebook fixes the random seed at 42 and applies model-specific training
+overrides. The main values are:
+\begin{itemize}
+    \item LSTM drift epochs: 50;
+    \item TimeGAN epochs: 80;
+    \item LightSB epochs: 50;
+    \item RNN epochs: 75, hidden dimension 128, context length 20;
+    \item Transformer epochs: 75, model dimension 128, three layers, four
+    attention heads, context length 20;
+    \item generated/evaluated samples: 512.
+\end{itemize}
+
+The comparison is not identical conditioning for every model, because the model
+interfaces differ. Instead, the notebook makes the conditioning explicit.
+JD-SBTS models receive the same real initial states. Autoregressive models
+receive the same real prefix windows of length 20 and complete the remaining
+trajectory. Window-level and adversarial models are unconditional with respect
+to the specific evaluation initial state, so they share the reset random seed
+and the same evaluation subset.
+
+\subsection{Metrics}
+
+The evaluation uses complementary metrics rather than a single score. Lower
+values are better for all metric values in the main ranking table.
+
+\paragraph{Wasserstein distance.}
+The average one-dimensional Wasserstein distance compares empirical return
+distributions feature by feature and averages over all features. It measures
+whether generated increments have the same marginal distribution as real
+increments without mixing adjacent feature columns into artificial differences.
+
+\paragraph{Autocorrelation MSE.}
+The ACF error computes return autocorrelation functions for every
+sample-feature series, averages them, and compares the real and generated
+average ACF curves up to a fixed maximum lag. It penalizes incorrect temporal
+dependence across all features.
+
+\paragraph{Correlation distance.}
+The correlation metric computes the Frobenius distance between real and
+generated feature-correlation matrices. It is important for multi-feature stock
+windows because the six input channels are strongly dependent.
+
+\paragraph{Discriminative scores.}
+The pipeline records two post-hoc classifier diagnostics. The GRU
+discriminator tests sequential distinguishability and also records an
+effective score that accounts for prediction-balance bias. The 1D-CNN
+discriminator tests whether local temporal patterns make generated windows
+separable from real windows. Both raw scores are defined as
+\(|\mathrm{accuracy}-0.5|\), so lower values mean that the classifier is closer
+to random guessing. These diagnostics should still be read carefully: they
+measure realism from specific classifier perspectives, not calibrated
+statistical distances.
+
+\paragraph{Predictive score.}
+A predictor is trained on generated windows and evaluated on real windows. This
+tests whether generated sequences contain transferable forecasting structure.
+When no target column is specified, the current implementation predicts all
+features at the final step and reports the MAE.
+
+\paragraph{Stylized facts.}
+The notebook computes relative errors for volatility clustering, fat tails, and
+leverage effect. These quantities are computed feature by feature from returns
+and then averaged, so the reported stylized score now reflects the full
+multi-feature stock window rather than only a single selected column.
+
+\section{Results}
+
+\subsection{Runtime and Primary Metrics}
+
+Table~\ref{tab:main-results} reports the current saved QQQ benchmark values for
+the seven models that appear in the latest metric table. The base JD-SBTS model
+has the best aggregate rank because it combines the best ACF error, a strong
+predictive score, and good stylized-fact preservation. The RNN is a close
+second and remains strong on short-horizon prefix completion. The Transformer
+has the best Wasserstein distance and the best correlation distance, but its
+stylized-fact score is weaker. JD-SBTS-F has the best predictive score and the
+best stylized-fact score, although its marginal Wasserstein and correlation
+metrics are weaker in this run.
+
+\begin{table}[H]
+\centering
+\caption{Main QQQ benchmark results. Lower is better for Wasserstein distance,
+ACF MSE, predictive score, correlation distance, stylized score, and overall
+rank score.}
+\label{tab:main-results}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrrr}
+\toprule
+Model & Train time (s) & Gen. time (s) & Wasserstein & ACF MSE
+& Predictive & Corr. dist. & Overall rank \\
+\midrule
+\texttt{jd\_sbts} & 156.52 & 0.45 & 0.103038 & 0.000992 & 0.274136 & 3.913000 & 2.967 \\
+\texttt{rnn} & 8.09 & 0.13 & 0.031686 & 0.001911 & 0.274640 & 0.468194 & 3.033 \\
+\texttt{transformer\_ar} & 16.16 & 0.26 & 0.014647 & 0.006709 & 0.283070 & 0.179678 & 3.233 \\
+\texttt{jd\_sbts\_f} & 152.54 & 0.29 & 0.172726 & 0.005617 & 0.269187 & 4.796639 & 4.200 \\
+\texttt{lightsb} & 2.92 & 0.10 & 0.146802 & 0.002044 & 0.318087 & 3.347431 & 4.300 \\
+\texttt{lightsb\_path} & 146.60 & 0.10 & 0.039541 & 0.008194 & 0.300270 & 3.549825 & 4.367 \\
+\texttt{timegan} & 103.80 & 0.02 & 0.066906 & 0.159717 & 1.665162 & 3.672485 & 5.900 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Several observations are immediate. First, pure runtime is not aligned with
+metric quality. LightSB is very fast to train in this configuration, but its
+window-level formulation is still weaker on the overall ranking. Second, the
+autoregressive baselines are strong on this 60-day stock-window task: the RNN
+is close to JD-SBTS overall, while the Transformer gives the closest terminal
+marginal distribution and feature-correlation structure. Third, JD-SBTS
+variants are slower to train because they combine calibration, drift learning,
+and simulation components, but this run shows that their mechanistic structure
+can be competitive with purely neural sequence models.
+
+\subsection{Discriminative Diagnostics}
+
+Table~\ref{tab:disc} shows the saved GRU discriminative diagnostics from the
+current benchmark output. The updated pipeline additionally records a 1D-CNN
+discriminative score under \texttt{cnn\_discriminative\_score}; the full table
+should be regenerated after rerunning the notebook. The diagnostic uses 512
+real and 512 generated windows, repeated 10 times with an 80/20 balanced split.
+Each repeat trains on 409 real and 409 generated windows and tests on 103 real
+and 103 generated windows.
+
+\begin{table}[H]
+\centering
+\caption{Saved GRU discriminative diagnostics. The score is derived from a
+post-hoc GRU classifier and is defined as $|\mathrm{accuracy}-0.5|$; lower
+values indicate that the classifier has more difficulty separating real and
+generated windows.}
+\label{tab:disc}
+\begin{tabular}{lrrrr}
+\toprule
+Model & Score & Std. & Accuracy & Predicted-real rate \\
+\midrule
+\texttt{lightsb} & 0.296117 & 0.019659 & 0.796117 & 0.499029 \\
+\texttt{transformer\_ar} & 0.332039 & 0.091417 & 0.832039 & 0.499029 \\
+\texttt{jd\_sbts} & 0.371845 & 0.125656 & 0.871845 & 0.580583 \\
+\texttt{timegan} & 0.450485 & 0.143722 & 0.950485 & 0.450485 \\
+\texttt{lightsb\_path} & 0.458252 & 0.017664 & 0.958252 & 0.494175 \\
+\texttt{rnn} & 0.482524 & 0.016704 & 0.982524 & 0.504854 \\
+\texttt{jd\_sbts\_f} & 0.488350 & 0.008464 & 0.988350 & 0.502913 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The discriminative table should not be interpreted alone. For instance,
+LightSB obtains the lowest classifier-based score, but it does not dominate the
+primary statistical metrics. TimeGAN has a moderate discriminative score while
+its predictive score is poor and its ACF error is large. This indicates that a
+discriminator can be insensitive to some properties that matter for forecasting
+transfer or temporal dependence. Conversely, JD-SBTS-F has the best
+stylized-fact score but is easy for the classifier to separate from real data.
+
+\subsection{Stylized-Fact Preservation}
+
+Table~\ref{tab:stylized} reports relative errors for the three stylized facts.
+JD-SBTS-F has the best average stylized score, followed by the base JD-SBTS.
+This is consistent with the model design: explicit jumps, local volatility, and
+feedback stress are intended to capture tail behavior and volatility response,
+whereas autoregressive neural models mainly optimize conditional next-step
+dynamics.
+
+\begin{table}[H]
+\centering
+\caption{Stylized-fact relative errors on generated returns. Lower is better.}
+\label{tab:stylized}
+\begin{tabular}{lrrrr}
+\toprule
+Model & Vol. clustering & Fat tails & Leverage effect & Stylized score \\
+\midrule
+\texttt{jd\_sbts\_f} & 0.028114 & 0.345227 & 0.095700 & 0.156347 \\
+\texttt{jd\_sbts} & 0.360012 & 0.533939 & 0.346011 & 0.413321 \\
+\texttt{lightsb\_path} & 0.511614 & 0.438253 & 0.964585 & 0.638150 \\
+\texttt{lightsb} & 0.766930 & 0.983955 & 1.003505 & 0.918130 \\
+\texttt{timegan} & 0.905866 & 0.981688 & 0.959081 & 0.948878 \\
+\texttt{transformer\_ar} & 0.689446 & 3.352891 & 0.240817 & 1.427718 \\
+\texttt{rnn} & 0.910866 & 4.042890 & 0.085005 & 1.679587 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The feedback model now clearly improves stylized-fact preservation. Its
+volatility-clustering and leverage-effect errors are especially small relative
+to the other models. At the same time, it remains weaker on Wasserstein and
+correlation distance, which shows that matching financial stylized facts and
+matching full multivariate window distributions are related but distinct
+objectives.
+
+\subsection{Qualitative Path Comparisons}
+
+Figure~\ref{fig:paths} compares real and generated close-price trajectories for
+three representative models. The left panel of each subfigure shows matched
+individual windows, and the right panel shows the 10--90\% distribution band and
+mean trajectory.
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{\detokenize{notebook_outputs/benchmark_main_pipeline/visual_comparisons/real_vs_generated_rnn_Close.png}}
+    \caption{\texttt{rnn}: strong aggregate rank and smooth prefix-conditioned completions.}
+\end{subfigure}
+\vspace{0.4em}
+\begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{\detokenize{notebook_outputs/benchmark_main_pipeline/visual_comparisons/real_vs_generated_jd_sbts_f_Close.png}}
+    \caption{\texttt{jd\_sbts\_f}: jump-diffusion dynamics with feedback stress.}
+\end{subfigure}
+\vspace{0.4em}
+\begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{\detokenize{notebook_outputs/benchmark_main_pipeline/visual_comparisons/real_vs_generated_transformer_ar_Close.png}}
+    \caption{\texttt{transformer\_ar}: best terminal Wasserstein distance in the current table.}
+\end{subfigure}
+\caption{Real versus generated close-feature paths from the saved visual
+comparison artifacts.}
+\label{fig:paths}
+\end{figure}
+
+The visual comparisons support the quantitative results. The autoregressive
+models follow the upward drift and conditional continuation implied by the
+prefix. The JD-SBTS-F samples are less tightly tied to the prefix trend but
+preserve a stochastic path-generation interpretation with volatility response.
+This is a central trade-off of the project: neural autoregressive baselines can
+be very competitive on finite-window benchmarks, while bridge/SDE models
+provide a more explicit stochastic structure for scenario generation.
+
+\section{Discussion}
+
+\subsection{What Worked}
+
+The unified factory design is one of the strongest engineering outcomes. It
+allows very different models to be evaluated with the same pipeline and reduces
+the risk that result differences come from inconsistent data handling. The
+notebook also explicitly records generation protocols. This is important
+because conditioning differs by model class: comparing a prefix-conditioned RNN
+with an unconditional window-level bridge without stating the protocol would be
+misleading.
+
+The benchmark confirms that simple autoregressive models are hard to beat on
+short stock windows. The RNN is not the most elaborate model, but it receives a
+real 20-step prefix and learns the next-step dynamics well. This gives it low
+ACF error, a strong predictive score, and the second-best aggregate rank. The
+Transformer improves terminal Wasserstein and feature-correlation distance,
+suggesting that attention helps match marginal and cross-feature structure, but
+it does not improve all temporal or stylized metrics.
+
+The JD-SBTS models are valuable because they target mechanisms rather than only
+black-box sequence likelihood. The base model has the best aggregate rank in
+the current table, while the feedback variant has the best stylized-fact score.
+This is important for financial applications where tail risk, volatility
+clustering, and leverage-like behavior may matter more than a single aggregate
+rank.
+
+\subsection{Limitations}
+
+Several limitations remain.
+
+First, the current quantitative table is a single benchmark run on QQQ windows.
+The repository supports Merton, OU, high-frequency OU, and other stock tickers,
+but a robust empirical conclusion requires repeated runs across datasets and
+seeds. A single random split can favor models whose inductive bias matches the
+selected window distribution.
+
+Second, the generation protocols are fair but not identical. Prefix-conditioned
+models have more information about each evaluation trajectory than
+unconditional models. This is acceptable when stated explicitly, but future
+tables should separate unconditional generation, initial-state conditioning,
+and prefix completion as different tasks.
+
+Third, the current LightSB window baseline is disadvantaged by flattening the
+entire path. A 60-by-6 window becomes a 360-dimensional vector, and temporal
+structure is only implicit. The path-level LightSB variant is a better
+conceptual match for time series and should be included systematically in the
+final quantitative tables.
+
+Fourth, discriminative scores are sensitive to classifier capacity and training
+details. Reporting both GRU and 1D-CNN variants reduces dependence on a single
+classifier architecture, but low classifier-based scores still do not imply
+good predictive or stylized-fact performance. They should be treated as
+diagnostics among several, not as the main target.
+
+\subsection{Next Improvements}
+
+The most direct next step is to run the same full benchmark for all 11
+registered models and save the metric tables as CSV files. This would make the
+report easier to reproduce and avoid relying on notebook display outputs.
+Additional improvements include:
+\begin{itemize}
+    \item repeated seeds with mean and confidence intervals;
+    \item a separated task taxonomy: unconditional generation, $x_0$-conditioned
+    generation, and prefix completion;
+    \item better calibration of feedback parameters $\kappa$ and $\gamma$;
+    \item explicit parameter counts, training time, and generation time for all
+    models;
+    \item additional market assets and crisis periods to test tail robustness;
+    \item direct comparison between \texttt{lightsb} and
+    \texttt{lightsb\_path} on the same metrics.
+\end{itemize}
+
+\section{Conclusion}
+
+The project implements a broad and extensible framework for financial
+time-series generation. The JD-SBTS family introduces jump-diffusion
+Schrodinger-bridge-inspired generation with interpretable components: jump
+detection, local volatility calibration, neural drift estimation, and
+feedback-driven volatility amplification. The benchmark demonstrates that no
+single model dominates every criterion. On the current QQQ benchmark, the base
+JD-SBTS model has the best aggregate rank, the Transformer has the best terminal
+Wasserstein distance and correlation distance, and JD-SBTS-F has the best
+stylized-fact score. This split of winners is important: it shows that the
+choice of model should depend on whether the priority is distribution matching,
+prefix completion, interpretable dynamics, or financial stylized facts.
+
+The main lesson is that model quality depends on the intended use case. If the
+task is short-horizon prefix completion, autoregressive neural baselines are
+strong and efficient. If the task is interpretable scenario generation with
+jumps, tails, and volatility mechanisms, the JD-SBTS approach is more aligned
+with the financial structure of the data. Future work should therefore evaluate
+models by task type and extend the benchmark across more datasets, seeds, and
+market regimes.
+
+\begin{thebibliography}{9}
+
+\bibitem{schrodinger1931}
+E. Schrodinger.
+\newblock Uber die Umkehrung der Naturgesetze.
+\newblock \emph{Sitzungsberichte der Preussischen Akademie der Wissenschaften},
+1931.
+
+\bibitem{merton1976}
+R. C. Merton.
+\newblock Option pricing when underlying stock returns are discontinuous.
+\newblock \emph{Journal of Financial Economics}, 1976.
+
+\bibitem{leonard2014}
+C. Leonard.
+\newblock A survey of the Schrodinger problem and some of its connections with
+optimal transport.
+\newblock \emph{Discrete and Continuous Dynamical Systems A}, 2014.
+
+\bibitem{timegan2019}
+J. Yoon, D. Jarrett, and M. van der Schaar.
+\newblock Time-series generative adversarial networks.
+\newblock \emph{NeurIPS}, 2019.
+
+\bibitem{transformer2017}
+A. Vaswani et al.
+\newblock Attention is all you need.
+\newblock \emph{NeurIPS}, 2017.
+
+\bibitem{ddpm2020}
+J. Ho, A. Jain, and P. Abbeel.
+\newblock Denoising diffusion probabilistic models.
+\newblock \emph{NeurIPS}, 2020.
+
+\bibitem{lightsb2024}
+A. Korotin et al.
+\newblock Light Schrodinger Bridge.
+\newblock \emph{ICLR}, 2024.
+
+\end{thebibliography}
+
+\end{document}

@@ -12,7 +12,7 @@
 
 ## Authors & Supervision
 
-This project was developed by **Lizhan HONG** (*École Polytechnique*) under the supervision and guidance of **Prof. Huyên PHAM**.
+This project was developed by **Lizhan Hong, Sheng Wan, Haoyu Luo, Cyprien Kutek, Dimitri Krawczyk** under the supervision and guidance of **Prof. Huyên PHAM**.
 
 ---
 
@@ -27,7 +27,7 @@ The active codebase now uses one unified model interface and one active experime
 - `main_old.py` remains only as a compatibility shim.
 - The old `baselines/` compatibility package has been removed; active baselines live under `models/`.
 
-The current registry contains 10 models:
+The current registry contains 11 models:
 
 | Model key | Description |
 |---|---|
@@ -35,7 +35,8 @@ The current registry contains 10 models:
 | `jd_sbts_f` | JD-SBTS with stress-factor feedback for jump-volatility interaction |
 | `jd_sbts_neural` | JD-SBTS with neural jump-intensity modeling |
 | `jd_sbts_f_neural` | JD-SBTS with both feedback and neural jumps |
-| `lightsb` | Light Schrödinger Bridge baseline with sum-exp quadratic potentials |
+| `lightsb` | Window-level Light Schrödinger Bridge baseline with sum-exp quadratic potentials |
+| `lightsb_path` | Path-level Light Schrödinger Bridge baseline with one-step potential bridges |
 | `numba_sb` | Fast Numba-accelerated Markovian SB baseline |
 | `timegan` | GRU-based TimeGAN baseline |
 | `diffusion_ts` | DDPM-style diffusion baseline for time series |
@@ -60,13 +61,13 @@ where $W_t$ is Brownian motion and $J_t$ is a jump component. The implemented pi
 sbts_advanced/
 ├── main.py                         # Active CLI experiment pipeline
 ├── main_old.py                     # Legacy compatibility shim
-├── benchmark_main_pipeline.ipynb   # Main benchmark notebook and dataset builder
+├── main_pipeline.ipynb             # Main benchmark notebook and dataset builder
 ├── smoke_test_new_baselines.py     # Tiny end-to-end smoke test for RNN/Transformer baselines
 ├── models/
 │   ├── base.py                     # Shared TimeSeriesGenerator API
 │   ├── factory.py                  # Model registry, aliases, and default configs
 │   ├── sbts_variants.py            # JD-SBTS, feedback, and neural-jump variants
-│   ├── lightsb.py                  # LightSB and Numba-SB models
+│   ├── lightsb.py                  # Window/path LightSB and Numba-SB models
 │   ├── timegan_baseline.py         # TimeGAN baseline
 │   ├── diffusion_ts_baseline.py    # Diffusion-TS baseline
 │   ├── rnn_baseline.py             # Autoregressive recurrent baseline
@@ -115,16 +116,29 @@ For synthetic data, `window_size` and `synthetic_total_steps` are intentionally 
 
 ### Benchmark Notebook
 
-`benchmark_main_pipeline.ipynb` builds and caches paper-style benchmark datasets under `notebook_outputs/benchmark_main_pipeline/datasets/`:
+`main_pipeline.ipynb` builds and caches paper-style benchmark datasets under `notebook_outputs/benchmark_main_pipeline/datasets/`.
 
-| Dataset | Current cached shape | Notes |
+The current notebook source is configured for the stock benchmark:
+
+```text
+BENCHMARK_DATASET = stock
+STOCK_TICKER = QQQ
+window_length = 60
+normalization = base_one
+n_generate = 512
+```
+
+Available notebook datasets are:
+
+| Dataset | Default shape | Notes |
 |---|---:|---|
 | `merton` | `(1000, 101, 1)` | Merton jump-diffusion paths, path representation |
 | `ou_standard` | `(1000, 101, 1)` | Ornstein-Uhlenbeck process, path representation |
 | `ou_high_frequency` | `(1000, 1001, 1)` | Higher-frequency OU process |
-| `google` | `(3846, 24, 6)` | GOOGL daily OHLCV-style windows, base-one normalized |
+| `stock` | ticker-dependent | Yahoo Finance OHLCV-style windows, currently QQQ with shape `(3968, 60, 6)` in the saved notebook output |
+| `google` | alias of `stock` | Backward-compatible dataset name for older notebook runs |
 
-The Google dataset cache uses `GOOGL` from Yahoo Finance. The requested range is `2004-01-01` to `2019-12-31`; the actual available start date in the cached metadata is `2004-08-19`.
+The stock dataset uses Yahoo Finance. The requested range is `2004-01-01` to `2019-12-31`; the actual available dates depend on the selected ticker and Yahoo Finance coverage.
 
 ---
 
@@ -158,6 +172,7 @@ Run a specific model:
 
 ```bash
 python main.py --model jd_sbts_f
+python main.py --model lightsb_path
 python main.py --model rnn
 python main.py --model transformer_ar
 ```
@@ -187,17 +202,23 @@ samples = model.generate(n_samples, n_steps=None, x0=None)
 
 ## Benchmark Protocol
 
-The benchmark notebook now uses `MODELS_TO_RUN = list(list_models().keys())`, so it stays aligned with `models/factory.py`.
+The benchmark notebook imports models through `models/factory.py`, so model construction stays aligned with the active registry. The current report subset is:
+
+```text
+MODELS_TO_RUN = jd_sbts, jd_sbts_f, lightsb, lightsb_path, timegan, rnn, transformer_ar
+```
+
+Set `MODELS_TO_RUN = list(list_models().keys())` in the notebook to run the full 11-model registry.
 
 The fair-comparison settings in the current notebook are:
 
 - all models train on the same training windows;
-- all metrics use the same shared evaluation subset;
-- conditioned SBTS models receive the same real initial states (`shared_x0`);
+- all metrics use the same shared evaluation subset, capped by `n_generate = 512`;
+- conditioned SBTS and path-level LightSB models receive the same real initial states (`shared_x0`);
 - autoregressive models receive the same real prefix windows (`shared_prefix_len_*`);
 - unconditional models share the reset random seed and evaluation subset.
 
-Important caveat: the current saved notebook output records `transformer_ar` as failed on the length-101 `ou_standard` benchmark because `transformer_ar_max_seq_len` was 64 while the sequence requires at least `seq_len - 1 = 100`. When running `transformer_ar` on this benchmark, set:
+Important caveat: when running `transformer_ar` on windows longer than the default maximum sequence length, set:
 
 ```python
 config["transformer_ar_max_seq_len"] = data.shape[1]
@@ -207,33 +228,25 @@ before model construction.
 
 ---
 
-## Latest Saved Benchmark Result
+## Current Benchmark Configuration
 
-The current saved benchmark output in `benchmark_main_pipeline.ipynb` uses:
+The current notebook source uses:
 
 ```text
-dataset = ou_standard
+dataset = stock
+ticker = QQQ
 seed = 42
-train/val/test = 700/150/150
-generation/evaluation samples = 64
-epochs override = 25 for JD-SBTS drift, LightSB, diffusion, RNN, and Transformer; 20 for TimeGAN
+window_length = 60
+features = High, Low, Open, Close, Adj Close, Volume
+generation/evaluation samples = 512
+discriminative_iterations = 500
+discriminative_repeats = 10
+predictive_iterations = 500
 ```
 
-Main metrics are lower-is-better:
+Discriminative diagnostics use 512 real windows and 512 generated windows. Each repeat trains on 409 real plus 409 generated windows and tests on 103 real plus 103 generated windows. Predictive score trains on all 512 generated windows and evaluates on all 512 real windows.
 
-| Model | Protocol | Wasserstein | ACF MSE | Predictive | Overall rank score |
-|---|---|---:|---:|---:|---:|
-| `jd_sbts_neural` | `shared_x0` | 0.040578 | 0.000221 | 0.499281 | 1.866667 |
-| `jd_sbts_f_neural` | `shared_x0` | 0.046222 | 0.000227 | 0.499060 | 2.200000 |
-| `rnn` | `shared_prefix_len_50` | 0.282918 | 0.000071 | 0.546354 | 3.266667 |
-| `diffusion_ts` | `shared_seed_only` | 0.288569 | 0.006900 | 0.570319 | 5.000000 |
-| `lightsb` | `shared_seed_only` | 0.399893 | 0.006888 | 0.568908 | 5.133333 |
-| `jd_sbts_f` | `shared_x0` | 0.332305 | 0.003098 | 0.887355 | 5.200000 |
-| `jd_sbts` | `shared_x0` | 0.317969 | 0.003108 | 0.895484 | 5.333333 |
-| `numba_sb` | `shared_seed_only` | 2.596094 | 0.008363 | 0.526521 | 6.300000 |
-| `timegan` | `shared_seed_only` | 0.563282 | 0.002934 | 1.155755 | 6.600000 |
-
-On this saved OU-standard run, the neural-jump SBTS variants dominate the main distributional metrics. The plain `jd_sbts` and `jd_sbts_f` variants remain strongest on the notebook's stylized-facts relative-error score, while the neural-jump variants better match Wasserstein, ACF, predictive, and discriminative metrics.
+Existing notebook output cells may reflect previous executions. Re-run `main_pipeline.ipynb` after changing `MODELS_TO_RUN`, dataset settings, or model implementations.
 
 The detailed architecture and parameter-count notes are in `results/model_explanation.md`.
 
@@ -246,6 +259,7 @@ Saved result artifacts currently include:
 - `results/output.png`: benchmark summary figure;
 - `results/merton_*.png`: Merton benchmark visualizations;
 - `results/google_*.png`: Google/GOOGL benchmark visualizations;
+- `results/stock_*.png`: stock benchmark visualizations, when generated;
 - `results/model_explanation.md`: model-by-model architecture and parameter discussion.
 
 ![Benchmark summary](results/output.png)
@@ -258,7 +272,7 @@ Saved result artifacts currently include:
 - Feedback variants for jump-volatility interaction and volatility clustering.
 - Local volatility calibration with KDE-style estimators.
 - LSTM drift estimation on purified trajectories.
-- LightSB, Numba-SB, TimeGAN, diffusion, RNN, and Transformer baselines behind one factory interface.
+- Window-level LightSB, path-level LightSB, Numba-SB, TimeGAN, diffusion, RNN, and Transformer baselines behind one factory interface.
 - Numba-accelerated statistical metrics.
 - Discriminative and predictive scores for generated time series evaluation.
 - Notebook-based reproducible benchmark dataset construction with cached metadata and splits.

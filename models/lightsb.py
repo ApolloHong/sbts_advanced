@@ -387,6 +387,234 @@ class LightSB(TimeSeriesGenerator):
         return self.train_losses
 
 
+class PathLightSB(TimeSeriesGenerator):
+    """
+    Path-level Light Schrödinger Bridge over one-step transitions.
+
+    This variant keeps the official-style quadratic-potential LightSB solver,
+    but trains it on augmented transition pairs [X_t, t] -> [X_{t+1}, t+dt].
+    Generation accepts real initial states and rolls out a path step by step.
+    """
+
+    MODEL_TYPE = "lightsb_path"
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__(config)
+
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch required for PathLightSB")
+
+        self.n_potentials = config.get("lightsb_path_n_potentials", 20)
+        self.epsilon = config.get("lightsb_path_epsilon", 1.0)
+        self.s_diagonal_init = config.get("lightsb_path_s_diagonal_init", 0.1)
+        self.sampling_batch_size = config.get("lightsb_path_sampling_batch_size", 512)
+        self.init_centers_from_data = config.get("lightsb_path_init_centers_from_data", True)
+        self.epochs = config.get("lightsb_path_epochs", 100)
+        self.lr = config.get("lightsb_path_lr", 0.001)
+        self.batch_size = config.get("lightsb_path_batch_size", 256)
+        self.weight_decay = config.get("lightsb_path_weight_decay", 0.0)
+        self.grad_clip = config.get("lightsb_path_grad_clip", 1.0)
+        self.state_clip = config.get("lightsb_path_state_clip", 8.0)
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.bridge = None
+        self.n_features = None
+        self.seq_len = None
+        self.aug_dim = None
+        self.data_mean = None
+        self.data_std = None
+        self.time_grid = None
+        self.x0_samples = None
+        self.train_losses = []
+
+    @staticmethod
+    def _ensure_3d(data: np.ndarray) -> np.ndarray:
+        if data.ndim == 2:
+            return data[:, :, np.newaxis]
+        return data
+
+    def _normalize_states(self, x: np.ndarray) -> np.ndarray:
+        return (x - self.data_mean) / self.data_std
+
+    def _denormalize_states(self, x: np.ndarray) -> np.ndarray:
+        return x * self.data_std + self.data_mean
+
+    @staticmethod
+    def _normalize_time_grid(time_grid: np.ndarray) -> np.ndarray:
+        t = np.asarray(time_grid, dtype=np.float32)
+        if len(t) <= 1:
+            return np.zeros_like(t)
+        span = float(t[-1] - t[0])
+        if abs(span) < 1e-12:
+            return np.linspace(0.0, 1.0, len(t), dtype=np.float32)
+        return ((t - t[0]) / span).astype(np.float32)
+
+    def fit(
+        self,
+        data: np.ndarray,
+        time_grid: np.ndarray,
+        verbose: bool = True,
+    ) -> "PathLightSB":
+        """Fit the path-level LightSB on one-step augmented transitions."""
+        data = self._ensure_3d(data).astype(np.float32, copy=False)
+        n_samples, seq_len, n_features = data.shape
+        if seq_len < 2:
+            raise ValueError("PathLightSB requires seq_len >= 2")
+
+        self.n_features = n_features
+        self.seq_len = seq_len
+        self.aug_dim = n_features + 1
+        self.time_grid = np.asarray(time_grid, dtype=np.float64)
+        if len(self.time_grid) != seq_len:
+            self.time_grid = np.linspace(0.0, 1.0, seq_len)
+
+        self.data_mean = data.mean(axis=(0, 1), keepdims=True)
+        self.data_std = data.std(axis=(0, 1), keepdims=True) + 1e-8
+        data_norm = self._normalize_states(data)
+        self.x0_samples = data[:, 0, :].copy()
+
+        t_norm = self._normalize_time_grid(self.time_grid)
+        source_states = data_norm[:, :-1, :].reshape(-1, n_features)
+        target_states = data_norm[:, 1:, :].reshape(-1, n_features)
+        source_times = np.tile(t_norm[:-1], n_samples)[:, np.newaxis]
+        target_times = np.tile(t_norm[1:], n_samples)[:, np.newaxis]
+        source_aug = np.concatenate([source_states, source_times], axis=1)
+        target_aug = np.concatenate([target_states, target_times], axis=1)
+
+        x_source = torch.tensor(source_aug, dtype=torch.float32, device=self.device)
+        x_target = torch.tensor(target_aug, dtype=torch.float32, device=self.device)
+
+        self.bridge = QuadraticPotentialBridge(
+            dim=self.aug_dim,
+            n_potentials=self.n_potentials,
+            epsilon=self.epsilon,
+            sampling_batch_size=self.sampling_batch_size,
+            s_diagonal_init=self.s_diagonal_init,
+        ).to(self.device)
+
+        if self.init_centers_from_data:
+            self.bridge.init_r_by_samples(x_target)
+
+        optimizer = torch.optim.Adam(
+            self.bridge.parameters(),
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+        )
+
+        if verbose:
+            print("=" * 60)
+            print("Path-LightSB Training (one-step transitions)")
+            print("=" * 60)
+
+        n_transitions = len(x_target)
+        self.train_losses = []
+        for epoch in range(self.epochs):
+            perm = torch.randperm(n_transitions, device=self.device)
+            epoch_loss = 0.0
+            n_batches = 0
+
+            for start in range(0, n_transitions, self.batch_size):
+                idx = perm[start : start + self.batch_size]
+                batch_source = x_source[idx]
+                batch_target = x_target[idx]
+
+                optimizer.zero_grad()
+                loss = (
+                    self.bridge.get_log_c(batch_source).mean()
+                    - self.bridge.get_log_potential(batch_target).mean()
+                )
+                loss.backward()
+                if self.grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(self.bridge.parameters(), self.grad_clip)
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                n_batches += 1
+
+            avg_loss = epoch_loss / max(n_batches, 1)
+            self.train_losses.append(avg_loss)
+            if verbose and (epoch + 1) % 20 == 0:
+                print(f"  [Path-LightSB] Epoch {epoch + 1}/{self.epochs}, Loss: {avg_loss:.6f}")
+
+        self.bridge.eval()
+        self.is_fitted = True
+
+        if verbose:
+            print("=" * 60)
+            print("Path-LightSB Training Complete!")
+            print("=" * 60)
+
+        return self
+
+    def _prepare_x0(self, n_samples: int, x0: Optional[np.ndarray]) -> np.ndarray:
+        if x0 is None:
+            idx = np.random.choice(len(self.x0_samples), n_samples, replace=True)
+            return self.x0_samples[idx]
+
+        x0 = np.asarray(x0, dtype=np.float32)
+        if x0.ndim == 1:
+            if self.n_features == 1 and len(x0) == n_samples:
+                x0 = x0[:, np.newaxis]
+            elif len(x0) == self.n_features:
+                x0 = np.repeat(x0[np.newaxis, :], n_samples, axis=0)
+            else:
+                raise ValueError(
+                    "x0 must have shape (n_samples,), (n_features,), "
+                    "or (n_samples, n_features)"
+                )
+        elif x0.ndim == 2 and x0.shape[0] == 1 and n_samples > 1:
+            x0 = np.repeat(x0, n_samples, axis=0)
+        elif x0.ndim != 2 or x0.shape[0] != n_samples:
+            raise ValueError("x0 batch size must be 1 or match n_samples")
+
+        if x0.shape[-1] != self.n_features:
+            raise ValueError("x0 feature dimension does not match training data")
+        return x0
+
+    def generate(
+        self,
+        n_samples: int,
+        n_steps: Optional[int] = None,
+        x0: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Generate paths step by step from optional real initial states."""
+        if not self.is_fitted:
+            raise RuntimeError("Model must be fitted before generation")
+
+        n_steps = n_steps or self.seq_len
+        if n_steps < 1:
+            raise ValueError("n_steps must be positive")
+
+        initial = self._prepare_x0(n_samples, x0)
+        paths_norm = np.zeros((n_samples, n_steps, self.n_features), dtype=np.float32)
+        paths_norm[:, 0, :] = self._normalize_states(initial[np.newaxis, :, :])[0]
+
+        t_norm = np.linspace(0.0, 1.0, n_steps, dtype=np.float32)
+        self.bridge.eval()
+        with torch.no_grad():
+            for step in range(1, n_steps):
+                source_aug = np.concatenate(
+                    [
+                        paths_norm[:, step - 1, :],
+                        np.full((n_samples, 1), t_norm[step - 1], dtype=np.float32),
+                    ],
+                    axis=1,
+                )
+                source = torch.tensor(source_aug, dtype=torch.float32, device=self.device)
+                target_aug = self.bridge(source).cpu().numpy()
+                next_state = target_aug[:, : self.n_features]
+                if self.state_clip is not None:
+                    next_state = np.clip(next_state, -self.state_clip, self.state_clip)
+                paths_norm[:, step, :] = next_state
+
+        return self._denormalize_states(paths_norm)
+
+    def get_training_history(self) -> List[float]:
+        """Get training loss history."""
+        return self.train_losses
+
+
 # ============================================
 # Numba-Accelerated Markovian SB
 # ============================================

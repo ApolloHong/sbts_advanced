@@ -102,6 +102,7 @@ CLI_MODEL_CHOICES = [
     'jd_sbts_neural',
     'jd_sbts_f_neural',
     'lightsb',
+    'lightsb_path',
     'numba_sb',
     'timegan',
     'diffusion_ts',
@@ -112,6 +113,9 @@ CLI_MODEL_CHOICES = [
     'sbts_neural',
     'sbts_f_neural',
     'light_sb',
+    'path_lightsb',
+    'light_sb_path',
+    'step_lightsb',
     'numbasb',
     'time_gan',
     'diffusion',
@@ -208,6 +212,10 @@ LEGACY_MODEL_NAME_MAP = {
     'lightsb': 'lightsb',
     'light_sb': 'lightsb',
     'light-sb': 'lightsb',
+    'lightsb_path': 'lightsb_path',
+    'path_lightsb': 'lightsb_path',
+    'light_sb_path': 'lightsb_path',
+    'step_lightsb': 'lightsb_path',
     'timegan': 'timegan',
     'diffusion-ts': 'diffusion_ts',
     'diffusion_ts': 'diffusion_ts',
@@ -221,6 +229,7 @@ CONDITIONED_X0_MODELS = {
     'jd_sbts_f',
     'jd_sbts_neural',
     'jd_sbts_f_neural',
+    'lightsb_path',
 }
 CONDITIONED_PREFIX_MODELS = {'rnn', 'transformer_ar'}
 
@@ -566,13 +575,9 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             
             # Stylized facts
             real_returns = np.diff(real_eval, axis=1)
-            if real_returns.ndim == 3:
-                real_returns = real_returns[:, :, 0]
             gen_returns = np.diff(gen_eval, axis=1)
-            if gen_returns.ndim == 3:
-                gen_returns = gen_returns[:, :, 0]
-            real_stylized = modules['compute_stylized_facts_numba'](real_returns.flatten())
-            stylized = modules['compute_stylized_facts_numba'](gen_returns.flatten())
+            real_stylized = modules['compute_stylized_facts_numba'](real_returns)
+            stylized = modules['compute_stylized_facts_numba'](gen_returns)
             
             metrics = {
                 'train_time': training_times.get(model_name, 0),

@@ -88,6 +88,110 @@ class Discriminator(nn.Module):
         return y_hat_logit, y_hat
 
 
+class CNNDiscriminator(nn.Module):
+    """
+    1D-CNN based discriminator for time series classification.
+    Focuses on local temporal patterns and shapes.
+    """
+    def __init__(self, input_size, seq_len):
+        super().__init__()
+        # Use 3 layers of 1D convolutions
+        self.conv1 = nn.Conv1d(input_size, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv1d(64, 64, kernel_size=3, padding=1)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(64, 1)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        # x shape: (batch, seq_len, dim) -> needs (batch, dim, seq_len)
+        x = x.transpose(1, 2)
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = self.relu(self.conv3(x))
+        x = self.pool(x).squeeze(-1)
+        y_hat_logit = self.fc(x)
+        y_hat = torch.sigmoid(y_hat_logit)
+        return y_hat_logit, y_hat
+
+
+def discriminative_score_cnn_metrics(ori_data, generated_data, iterations=2000, 
+                                     device=torch.device('cpu'), device_ids=None):
+    """
+    Compute the discriminative score using a 1D-CNN discriminator.
+    
+    This metric complements the GRU-based score by looking for 
+    local temporal artifacts rather than sequential dependencies.
+    """
+    # Convert to tensors if needed
+    if isinstance(ori_data, np.ndarray):
+        ori_data = torch.tensor(ori_data, dtype=torch.float32)
+    if isinstance(generated_data, np.ndarray):
+        generated_data = torch.tensor(generated_data, dtype=torch.float32)
+    
+    ori_data = ori_data.to(device)
+    generated_data = generated_data.to(device)
+    
+    # Ensure 3D shape
+    if ori_data.dim() == 2:
+        ori_data = ori_data.unsqueeze(-1)
+    if generated_data.dim() == 2:
+        generated_data = generated_data.unsqueeze(-1)
+    
+    # Basic parameters
+    no, seq_len, dim = ori_data.shape
+    no_hat = generated_data.shape[0]
+    
+    # Build CNN discriminator
+    batch_size = max(1, min(128, no // 2))
+    
+    discriminator = CNNDiscriminator(dim, seq_len)
+    if device_ids is not None and len(device_ids) > 1:
+        discriminator = nn.DataParallel(discriminator, device_ids=device_ids)
+    discriminator = discriminator.to(device)
+    
+    d_optimizer = optim.Adam(discriminator.parameters(), lr=0.001)
+    
+    # Train/test split
+    train_x, train_x_hat, test_x, test_x_hat = train_test_divide(ori_data, generated_data)
+    
+    # Training
+    discriminator.train()
+    for itt in range(iterations):
+        X_mb = batch_generator(train_x, batch_size)
+        X_hat_mb = batch_generator(train_x_hat, batch_size)
+        
+        d_optimizer.zero_grad()
+        
+        y_logit_real, _ = discriminator(X_mb)
+        y_logit_fake, _ = discriminator(X_hat_mb)
+        
+        d_loss_real = nn.BCEWithLogitsLoss()(y_logit_real, torch.ones_like(y_logit_real))
+        d_loss_fake = nn.BCEWithLogitsLoss()(y_logit_fake, torch.zeros_like(y_logit_fake))
+        d_loss = d_loss_real + d_loss_fake
+        
+        d_loss.backward()
+        d_optimizer.step()
+    
+    # Evaluation
+    discriminator.eval()
+    with torch.no_grad():
+        _, y_pred_real = discriminator(test_x)
+        _, y_pred_fake = discriminator(test_x_hat)
+    
+    y_pred_final = np.squeeze(
+        np.concatenate((y_pred_real.cpu().numpy(), y_pred_fake.cpu().numpy()), axis=0)
+    )
+    y_label_final = np.concatenate(
+        (np.ones([len(y_pred_real)]), np.zeros([len(y_pred_fake)])), axis=0
+    )
+    
+    acc = accuracy_score(y_label_final, (y_pred_final > 0.5))
+    discriminative_score = np.abs(0.5 - acc)
+    
+    return discriminative_score
+
+
 def discriminative_score_metrics(ori_data, generated_data, iterations=2000, 
                                   device=torch.device('cpu'), device_ids=None):
     """

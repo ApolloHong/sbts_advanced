@@ -15,7 +15,7 @@ from models.sbts_variants import (
     JDSBTS, JDSBTSF, JDSBTSNeural, JDSBTSFNeural,
     get_sbts_model
 )
-from models.lightsb import LightSB, NumbaSB
+from models.lightsb import LightSB, PathLightSB, NumbaSB
 from models.timegan_baseline import TimeGAN
 from models.diffusion_ts_baseline import DiffusionTS
 from models.rnn_baseline import RNNBaseline
@@ -35,6 +35,7 @@ MODEL_REGISTRY: Dict[str, Type[TimeSeriesGenerator]] = {
     
     # Schrödinger Bridge variants
     'lightsb': LightSB,
+    'lightsb_path': PathLightSB,
     'numba_sb': NumbaSB,
     
     # Baselines
@@ -51,6 +52,9 @@ MODEL_ALIASES = {
     'sbts_neural': 'jd_sbts_neural',
     'sbts_f_neural': 'jd_sbts_f_neural',
     'light_sb': 'lightsb',
+    'path_lightsb': 'lightsb_path',
+    'light_sb_path': 'lightsb_path',
+    'step_lightsb': 'lightsb_path',
     'numbasb': 'numba_sb',
     'time_gan': 'timegan',
     'diffusion': 'diffusion_ts',
@@ -78,6 +82,7 @@ def get_model(
             - 'jd_sbts_neural': JD-SBTS with neural jump detection
             - 'jd_sbts_f_neural': JD-SBTS with feedback and neural jumps
             - 'lightsb': Light Schrödinger Bridge
+            - 'lightsb_path': Path-level Light Schrödinger Bridge
             - 'numba_sb': Numba-accelerated Markovian SB
             - 'timegan': TimeGAN baseline
             - 'diffusion_ts': Diffusion-TS baseline
@@ -129,7 +134,8 @@ def list_models() -> Dict[str, str]:
         'jd_sbts_f': 'JD-SBTS with Feedback mechanism (volatility clustering)',
         'jd_sbts_neural': 'JD-SBTS with Neural jump detection',
         'jd_sbts_f_neural': 'JD-SBTS with Feedback + Neural jumps',
-        'lightsb': 'Light Schrödinger Bridge (sum-exp quadratic potentials)',
+        'lightsb': 'Window-level Light Schrödinger Bridge (sum-exp quadratic potentials)',
+        'lightsb_path': 'Path-level Light Schrödinger Bridge (one-step potential bridge)',
         'numba_sb': 'Numba-accelerated Markovian SB (fast baseline)',
         'timegan': 'TimeGAN (Yoon et al., NeurIPS 2019)',
         'diffusion_ts': 'Diffusion model for time series',
@@ -208,6 +214,21 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
             'lightsb_weight_decay': 0.0,
             'lightsb_grad_clip': 1.0,
             'lightsb_source_std': 1.0,
+        })
+
+    elif model_type == 'lightsb_path':
+        base_config.update({
+            'lightsb_path_n_potentials': 20,
+            'lightsb_path_epsilon': 1.0,
+            'lightsb_path_s_diagonal_init': 0.1,
+            'lightsb_path_sampling_batch_size': 512,
+            'lightsb_path_init_centers_from_data': True,
+            'lightsb_path_epochs': 100,
+            'lightsb_path_lr': 0.001,
+            'lightsb_path_batch_size': 256,
+            'lightsb_path_weight_decay': 0.0,
+            'lightsb_path_grad_clip': 1.0,
+            'lightsb_path_state_clip': 8.0,
         })
     
     elif model_type == 'numba_sb':
@@ -366,8 +387,13 @@ def create_jdsbts_f(config: Optional[Dict[str, Any]] = None) -> JDSBTSF:
 
 
 def create_lightsb(config: Optional[Dict[str, Any]] = None) -> LightSB:
-    """Create LightSB model."""
+    """Create the window-level LightSB model."""
     return get_model('lightsb', config)
+
+
+def create_lightsb_path(config: Optional[Dict[str, Any]] = None) -> PathLightSB:
+    """Create the path-level LightSB model."""
+    return get_model('lightsb_path', config)
 
 
 def create_timegan(config: Optional[Dict[str, Any]] = None) -> TimeGAN:
