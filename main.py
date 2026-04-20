@@ -46,14 +46,16 @@ DEFAULT_CONFIG = {
     'experiment_name': 'jdsbts_experiment',
     'seed': 42,
     'verbose': True,
+    'device': 'cuda',
     
     # Data settings
     'data_source': 'etf',  # 'etf' or 'synthetic'
     'tickers': ['SPY', 'QQQ', 'IWM', 'EEM', 'GLD'],
     'start_date': '2020-01-01',
     'end_date': '2024-01-01',
+    'interval': '1d',
     'window_size': 60,
-    'stride': 10,
+    'stride': 5,
     'fallback_to_synthetic_on_data_error': False,
     
     # Synthetic data settings
@@ -68,7 +70,7 @@ DEFAULT_CONFIG = {
     # JD-SBTS settings
     'use_neural_jumps': False,
     'use_feedback': True,
-    'jump_threshold_std': 4.0,
+    'jump_threshold_std': 5.0,
     'feedback_kappa': 5.0,
     'feedback_gamma': 0.5,
     
@@ -395,6 +397,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
                 tickers=config.get('tickers', ['SPY', 'QQQ', 'IWM', 'EEM', 'GLD']),
                 start_date=config.get('start_date', '2020-01-01'),
                 end_date=config.get('end_date', '2024-01-01'),
+                interval=config.get('interval', '1d'),
                 return_type='log_returns'
             )
         except Exception as e:
@@ -424,7 +427,7 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
     
     # Create sliding windows
     window_size = config.get('window_size', 60)
-    stride = config.get('stride', 10)
+    stride = config.get('stride', 5)
     
     if raw_data.shape[1] > window_size:
         data = modules['create_sliding_windows'](raw_data, window_size, stride)

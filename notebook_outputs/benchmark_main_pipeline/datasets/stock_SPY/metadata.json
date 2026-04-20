@@ -1,0 +1,50 @@
+{
+  "dataset": "stock",
+  "source": "yfinance",
+  "ticker": "SPY",
+  "output_shape_documentation": "processed_windows shape is (2551, 24, 1)",
+  "raw_csv_path": "/home/wan/psc/sbts_advanced/notebook_outputs/benchmark_main_pipeline/datasets/stock_SPY/SPY_raw_daily.csv",
+  "raw_windows_shape": [
+    2551,
+    25,
+    1
+  ],
+  "processed_windows_shape": [
+    2551,
+    24,
+    1
+  ],
+  "stride": 1,
+  "download_report": {
+    "ticker": "SPY",
+    "requested_start_date": "2016-01-01",
+    "requested_end_date": "2026-03-31",
+    "interval": "1d",
+    "actual_start_date": "2016-01-04",
+    "actual_end_date": "2026-03-31",
+    "valid_rows": 2575,
+    "dropped_rows_missing_or_infinite": 0,
+    "features": [
+      "Close"
+    ]
+  },
+  "normalization_report": {
+    "method": "log_return",
+    "non_positive_value_count": 0
+  },
+  "config": {
+    "ticker": "SPY",
+    "start_date": "2016-01-01",
+    "end_date": "2026-03-31",
+    "interval": "1d",
+    "features": [
+      "Close"
+    ],
+    "window_length": 24,
+    "stride": 1,
+    "normalization": "log_return",
+    "train_frac": 0.7,
+    "val_frac": 0.15,
+    "shuffle": true
+  }
+}

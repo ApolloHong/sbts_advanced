@@ -27,6 +27,7 @@ def load_etf_data(
     tickers: List[str] = ['SPY', 'QQQ', 'IWM', 'EEM', 'GLD'],
     start_date: str = '2020-01-01',
     end_date: str = '2024-01-01',
+    interval: str = '1d',
     normalize: bool = True,
     return_type: str = 'log_returns',
     auto_adjust: bool = False,
@@ -38,10 +39,10 @@ def load_etf_data(
         tickers: List of ETF ticker symbols
         start_date: Start date (YYYY-MM-DD)
         end_date: End date (YYYY-MM-DD)
+        interval: yfinance interval, e.g. '1d' or '1h'
         normalize: Whether to normalize prices to start at 100
         return_type: 'prices', 'returns', or 'log_returns'
-        auto_adjust: Forwarded to yfinance download. Keep False to preserve
-            the 'Adj Close' column across newer yfinance versions.
+        auto_adjust: Forwarded to yfinance download.
     
     Returns:
         Tuple of (data, time_grid, metadata)
@@ -56,7 +57,7 @@ def load_etf_data(
         raise ImportError("pandas required for ETF data loading. Install with: pip install pandas")
     
     print(f"[Data] Loading ETF data: {tickers}")
-    print(f"[Data] Period: {start_date} to {end_date}")
+    print(f"[Data] Period: {start_date} to {end_date} (interval={interval})")
     
     # Download data
     data_dict = {}
@@ -67,21 +68,22 @@ def load_etf_data(
                 ticker,
                 start=start_date,
                 end=end_date,
+                interval=interval,
                 progress=False,
                 auto_adjust=auto_adjust,
             )
             if len(df) > 0:
-                if 'Adj Close' in df.columns:
-                    series = df['Adj Close']
-                    price_column_used[ticker] = 'Adj Close'
-                elif 'Close' in df.columns:
+                if 'Close' in df.columns:
+                    series = df['Close']
+                    price_column_used[ticker] = 'Close'
+                elif 'Adj Close' in df.columns:
                     warnings.warn(
-                        f"{ticker}: 'Adj Close' not found, falling back to 'Close'. "
+                        f"{ticker}: 'Close' not found, falling back to 'Adj Close'. "
                         "If this is unexpected, check the installed yfinance version "
                         "and auto_adjust setting."
                     )
-                    series = df['Close']
-                    price_column_used[ticker] = 'Close'
+                    series = df['Adj Close']
+                    price_column_used[ticker] = 'Adj Close'
                 else:
                     warnings.warn(
                         f"{ticker}: neither 'Adj Close' nor 'Close' columns are available"
@@ -132,6 +134,7 @@ def load_etf_data(
         'n_steps': data.shape[1],
         'start_date': start_date,
         'end_date': end_date,
+        'interval': interval,
         'return_type': return_type,
         'auto_adjust': auto_adjust,
         'price_column_used': price_column_used,

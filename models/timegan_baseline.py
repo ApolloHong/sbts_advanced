@@ -160,7 +160,7 @@ class TimeGAN(TimeSeriesGenerator):
         self.generator_steps = config.get("timegan_generator_steps", 2)
         self.clip_output = config.get("timegan_clip_output", True)
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(config.get("device", "cuda"))
 
         self.embedder = None
         self.recovery = None

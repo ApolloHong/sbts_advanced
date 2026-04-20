@@ -38,8 +38,17 @@ class Predictor(nn.Module):
         return y_pred
 
 
+def _resolve_training_device(device):
+    if device is None:
+        device = 'cuda'
+    device = torch.device(device)
+    if device.type == 'cuda' and not torch.cuda.is_available():
+        raise RuntimeError('CUDA training was requested, but CUDA is not available.')
+    return device
+
+
 def predictive_score_metrics(ori_data, generated_data, col_pred=None, 
-                              iterations=2000, device=torch.device('cpu')):
+                              iterations=2000, device=None):
     """
     Compute the predictive score.
     
@@ -64,6 +73,8 @@ def predictive_score_metrics(ori_data, generated_data, col_pred=None,
     Returns:
         predictive_score: MAE on real data
     """
+    device = _resolve_training_device(device)
+
     # Convert to tensors if needed
     if isinstance(ori_data, np.ndarray):
         ori_data = torch.tensor(ori_data, dtype=torch.float32)

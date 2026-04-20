@@ -115,14 +115,25 @@ class CNNDiscriminator(nn.Module):
         return y_hat_logit, y_hat
 
 
+def _resolve_training_device(device):
+    if device is None:
+        device = 'cuda'
+    device = torch.device(device)
+    if device.type == 'cuda' and not torch.cuda.is_available():
+        raise RuntimeError('CUDA training was requested, but CUDA is not available.')
+    return device
+
+
 def discriminative_score_cnn_metrics(ori_data, generated_data, iterations=2000, 
-                                     device=torch.device('cpu'), device_ids=None):
+                                     device=None, device_ids=None):
     """
     Compute the discriminative score using a 1D-CNN discriminator.
     
     This metric complements the GRU-based score by looking for 
     local temporal artifacts rather than sequential dependencies.
     """
+    device = _resolve_training_device(device)
+
     # Convert to tensors if needed
     if isinstance(ori_data, np.ndarray):
         ori_data = torch.tensor(ori_data, dtype=torch.float32)
@@ -193,7 +204,7 @@ def discriminative_score_cnn_metrics(ori_data, generated_data, iterations=2000,
 
 
 def discriminative_score_metrics(ori_data, generated_data, iterations=2000, 
-                                  device=torch.device('cpu'), device_ids=None):
+                                  device=None, device_ids=None):
     """
     Compute the discriminative score.
     
@@ -214,6 +225,8 @@ def discriminative_score_metrics(ori_data, generated_data, iterations=2000,
     Returns:
         discriminative_score: Float in [0, 0.5]
     """
+    device = _resolve_training_device(device)
+
     # Convert to tensors if needed
     if isinstance(ori_data, np.ndarray):
         ori_data = torch.tensor(ori_data, dtype=torch.float32)

@@ -108,8 +108,9 @@ The default CLI configuration uses ETF log returns for:
 tickers = SPY, QQQ, IWM, EEM, GLD
 start_date = 2020-01-01
 end_date = 2024-01-01
+interval = 1d
 window_size = 60
-stride = 10
+stride = 5
 ```
 
 For synthetic data, `window_size` and `synthetic_total_steps` are intentionally separate. This avoids the previous failure mode where `n_steps == window_size` produced too few sliding windows for neural baselines.
@@ -124,7 +125,9 @@ The current notebook source is configured for the stock benchmark:
 BENCHMARK_DATASET = stock
 STOCK_TICKER = QQQ
 window_length = 60
-normalization = base_one
+stride = 5
+interval = 1d
+normalization = log_return
 n_generate = 512
 ```
 
@@ -132,13 +135,13 @@ Available notebook datasets are:
 
 | Dataset | Default shape | Notes |
 |---|---:|---|
-| `merton` | `(1000, 101, 1)` | Merton jump-diffusion paths, path representation |
-| `ou_standard` | `(1000, 101, 1)` | Ornstein-Uhlenbeck process, path representation |
-| `ou_high_frequency` | `(1000, 1001, 1)` | Higher-frequency OU process |
-| `stock` | ticker-dependent | Yahoo Finance OHLCV-style windows, currently QQQ with shape `(3968, 60, 6)` in the saved notebook output |
+| `merton` | `(1000, 60, 1)` | Merton jump-diffusion paths, path representation |
+| `ou_standard` | `(1000, 60, 1)` | Ornstein-Uhlenbeck process, path representation |
+| `ou_high_frequency` | `(1000, 60, 1)` | Higher-frequency OU process |
+| `stock` | ticker-dependent, processed length 60 | Yahoo Finance close-price windows, currently configured to keep only `Close`; `log_return` uses 61 raw prices to produce 60 returns |
 | `google` | alias of `stock` | Backward-compatible dataset name for older notebook runs |
 
-The stock dataset uses Yahoo Finance. The requested range is `2004-01-01` to `2019-12-31`; the actual available dates depend on the selected ticker and Yahoo Finance coverage.
+The stock dataset uses Yahoo Finance. The requested range is `2004-01-01` to `2019-12-31` for daily data; the actual available dates depend on the selected ticker and Yahoo Finance coverage. Intraday intervals such as `1h` can be selected with `interval = 1h`, but Yahoo Finance typically only serves intraday history for recent periods, so use a shorter recent date range when switching to hourly data.
 
 ---
 
@@ -237,7 +240,10 @@ dataset = stock
 ticker = QQQ
 seed = 42
 window_length = 60
-features = High, Low, Open, Close, Adj Close, Volume
+stride = 5
+features = Close
+interval = 1d
+normalization = log_return
 generation/evaluation samples = 512
 discriminative_iterations = 500
 discriminative_repeats = 10

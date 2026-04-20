@@ -220,7 +220,7 @@ class NeuralJumpDetector:
         self.c = threshold_multiplier
         self.lr = lr
         self.epochs = epochs
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device or "cuda")
         
         # Static jump parameters (calibrated from data)
         self.static_params = {

@@ -179,6 +179,10 @@ class StaticJumpDetector(JumpDetector):
         
         self.threshold = config.get('jump_threshold_std', 4.0)
         self.rolling_window = config.get('jump_rolling_window', 20)
+        self.jump_size_scale = float(config.get('jump_size_scale', 1.0))
+        self.jump_size_clip = config.get('jump_size_clip', None)
+        if self.jump_size_clip is not None:
+            self.jump_size_clip = float(self.jump_size_clip)
         
         # Per-feature parameters
         self.jump_intensities = None
@@ -367,6 +371,7 @@ class StaticJumpDetector(JumpDetector):
                     self.jump_stds[k],
                     (n_samples, n_steps)
                 )
+                feature_jumps = self._stabilize_jump_sizes(feature_jumps)
                 jump_sizes[:, :, k] = feature_jumps * jump_mask[:, :, k]
             return jump_mask, jump_sizes
         else:
@@ -380,9 +385,18 @@ class StaticJumpDetector(JumpDetector):
         
         # Sample jump sizes
         jump_sizes = np.random.normal(mean, std, (n_samples, n_steps))
+        jump_sizes = self._stabilize_jump_sizes(jump_sizes)
         jump_sizes = jump_sizes * jump_mask
-        
+
         return jump_mask, jump_sizes
+
+    def _stabilize_jump_sizes(self, jump_sizes: np.ndarray) -> np.ndarray:
+        """Apply optional generation-time jump size shrinkage and clipping."""
+        if self.jump_size_scale != 1.0:
+            jump_sizes = jump_sizes * self.jump_size_scale
+        if self.jump_size_clip is not None and self.jump_size_clip > 0:
+            jump_sizes = np.clip(jump_sizes, -self.jump_size_clip, self.jump_size_clip)
+        return jump_sizes
     
     def get_parameters(self) -> Dict[str, Any]:
         """Get estimated jump parameters."""
@@ -529,7 +543,7 @@ class NeuralJumpDetector(JumpDetector):
         self.focal_gamma = config.get('focal_gamma', 2.0)
         self.verbose = config.get('verbose', True)
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(config.get('device', 'cuda'))
         
         # Models (to be created during fit)
         self.intensity_net = None

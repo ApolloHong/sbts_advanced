@@ -3,22 +3,22 @@
   "process": "Ornstein-Uhlenbeck",
   "path_shape": [
     1000,
-    1001
+    60
   ],
   "increments_shape": [
     1000,
-    1000
+    59
   ],
   "processed_windows_shape": [
     1000,
-    1001,
+    60,
     1
   ],
   "processed_windows_documentation": "shape is (num_windows, steps, features); features=1; path mode includes Y0 and has N+1 steps; increments mode has N steps",
   "representation": "path",
   "config": {
     "M": 1000,
-    "N": 1000,
+    "N": 59,
     "dt": 0.0003968253968253968,
     "theta": 100.0,
     "a": 1.0,
@@ -30,9 +30,9 @@
     "shuffle": true
   },
   "summary_statistics": {
-    "mean": 0.9998328278590001,
-    "std": 0.7088648564781385,
-    "increment_std": 0.20129037572280953,
-    "empirical_quadratic_variation": 40.51777557741645
+    "mean": 1.0049031514827191,
+    "std": 0.623985574494916,
+    "increment_std": 0.20139464433731094,
+    "empirical_quadratic_variation": 2.3930003771136628
   }
 }

@@ -2,25 +2,25 @@
   "dataset": "merton",
   "process": "Merton jump-diffusion",
   "path_shape": [
-    32,
-    13
+    1000,
+    60
   ],
   "increments_shape": [
-    32,
-    12
+    1000,
+    59
   ],
   "processed_windows_shape": [
-    32,
-    13,
+    1000,
+    60,
     1
   ],
   "processed_windows_documentation": "shape is (num_windows, steps, features); features=1; path mode includes Y0 and has N+1 steps; increments mode has N steps",
   "representation": "path",
   "config": {
-    "M": 32,
-    "N": 12,
+    "M": 1000,
+    "N": 59,
     "dt": 0.003968253968253968,
-    "N_pi": 2,
+    "N_pi": 100,
     "Y0": 1.0,
     "a": 0.0,
     "b": 2.0,
@@ -28,14 +28,14 @@
     "m_J": 0.0,
     "v_J": 0.8,
     "representation": "path",
-    "train_frac": 0.5,
-    "val_frac": 0.25,
+    "train_frac": 0.7,
+    "val_frac": 0.15,
     "shuffle": true
   },
   "summary_statistics": {
-    "mean": 1.0233311022406804,
-    "std": 0.6628827152718547,
-    "increment_std": 0.3015361565367182,
-    "empirical_quadratic_variation": 1.0882797942863185
+    "mean": 0.9987089655120767,
+    "std": 0.7215054708158057,
+    "increment_std": 0.20287366453027394,
+    "empirical_quadratic_variation": 2.4282670170861884
   }
 }

@@ -169,8 +169,10 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
     if model_type in ['jd_sbts', 'jd_sbts_f', 'jd_sbts_neural', 'jd_sbts_f_neural']:
         base_config.update({
             # Jump detection
-            'jump_threshold_std': 4.0,
+            'jump_threshold_std': 5.0,
             'jump_rolling_window': 20,
+            'jump_size_scale': 1.0,
+            'jump_size_clip': None,
             'use_neural_jumps': 'neural' in model_type,
             'neural_jump_hidden_dim': 64,
             'neural_jump_epochs': 30,

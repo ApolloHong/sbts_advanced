@@ -97,7 +97,7 @@ class RNNBaseline(TimeSeriesGenerator):
         self.weight_decay = config.get("rnn_weight_decay", 0.0)
         self.context_len = config.get("rnn_context_len")
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(config.get("device", "cuda"))
 
         self.model = None
         self.seq_len = None
@@ -285,4 +285,3 @@ class RNNBaseline(TimeSeriesGenerator):
     ) -> np.ndarray:
         """Alias for generate()."""
         return self.generate(n_samples=n_samples, n_steps=n_steps, x0=x0)
-

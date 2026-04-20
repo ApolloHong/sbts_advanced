@@ -36,7 +36,7 @@ The current `main_pipeline.ipynb` source is configured for:
 BENCHMARK_DATASET = stock
 STOCK_TICKER = QQQ
 window_length = 60
-normalization = base_one
+normalization = log_return
 n_generate = 512
 MODELS_TO_RUN = jd_sbts, jd_sbts_f, lightsb, lightsb_path, timegan, rnn, transformer_ar
 ```
@@ -117,10 +117,10 @@ This distinction is important for LightSB:
 
 | Dataset | Type | Default shape |
 |---|---|---:|
-| `merton` | Simulated Merton jump-diffusion paths | `(1000, 101, 1)` |
-| `ou_standard` | Simulated Ornstein-Uhlenbeck paths | `(1000, 101, 1)` |
-| `ou_high_frequency` | Higher-frequency Ornstein-Uhlenbeck paths | `(1000, 1001, 1)` |
-| `stock` | Yahoo Finance OHLCV-style windows | ticker-dependent, currently QQQ windows of length 60 |
+| `merton` | Simulated Merton jump-diffusion paths | `(1000, 60, 1)` |
+| `ou_standard` | Simulated Ornstein-Uhlenbeck paths | `(1000, 60, 1)` |
+| `ou_high_frequency` | Higher-frequency Ornstein-Uhlenbeck paths | `(1000, 60, 1)` |
+| `stock` | Yahoo Finance close-price windows | ticker-dependent, processed windows of length 60 |
 
 `google` remains as a backward-compatible alias for `stock`.
 
@@ -133,10 +133,10 @@ test_frac = 0.15  # implicit remainder
 shuffle = True
 ```
 
-The stock dataset uses the same split fractions. With `window_length = 60`, each stock sample is a 60-day window over:
+The stock dataset uses the same split fractions. With `window_length = 60`, each processed stock sample has 60 time steps over:
 
 ```text
-High, Low, Open, Close, Adj Close, Volume
+Close
 ```
 
 ## Model Details
@@ -213,7 +213,7 @@ The current implementation uses sum-exp quadratic potentials with diagonal quadr
 flat_dim = sequence_length * n_features
 ```
 
-For stock data with shape `(512, 60, 6)`, `flat_dim = 360`.
+For stock data with shape `(512, 60, 1)`, `flat_dim = 60`.
 
 Default key parameters:
 
@@ -244,7 +244,7 @@ The bridge dimension is:
 bridge_dim = n_features + 1
 ```
 
-For stock data with six features, `bridge_dim = 7`.
+For stock data with one feature, `bridge_dim = 2`.
 
 Generation is step-by-step:
 

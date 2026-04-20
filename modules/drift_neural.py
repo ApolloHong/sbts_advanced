@@ -280,7 +280,7 @@ class LSTMDriftEstimator(DriftEstimator):
         self.seq_len = config.get('lstm_seq_len', 20)
         self.dampening = config.get('lstm_drift_dampening', 0.9)
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(config.get('device', 'cuda'))
         
         # Model (to be created during fit)
         self.model = None
@@ -526,7 +526,7 @@ class TransformerDriftEstimator(DriftEstimator):
         self.dropout = config.get('transformer_dropout', 0.1)
         self.seq_len = config.get('transformer_seq_len', 20)
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(config.get('device', 'cuda'))
         
         self.model = None
         self.n_features = None

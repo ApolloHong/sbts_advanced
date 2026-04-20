@@ -125,7 +125,7 @@ class TransformerARBaseline(TimeSeriesGenerator):
         if self.d_model % self.n_heads != 0:
             raise ValueError("transformer_ar_d_model must be divisible by transformer_ar_n_heads")
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(config.get("device", "cuda"))
 
         self.model = None
         self.seq_len = None

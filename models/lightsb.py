@@ -223,7 +223,7 @@ class LightSB(TimeSeriesGenerator):
         self.grad_clip = config.get('lightsb_grad_clip', 1.0)
         self.source_std = config.get('lightsb_source_std', 1.0)
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(config.get("device", "cuda"))
         
         # Model components
         self.bridge = None
@@ -416,7 +416,7 @@ class PathLightSB(TimeSeriesGenerator):
         self.grad_clip = config.get("lightsb_path_grad_clip", 1.0)
         self.state_clip = config.get("lightsb_path_state_clip", 8.0)
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(config.get("device", "cuda"))
 
         self.bridge = None
         self.n_features = None

@@ -155,7 +155,7 @@ class LSTMDriftEstimator:
         self.huber_delta = huber_delta
         self.model = None
         self.scaler = StandardScaler()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda")
 
     def fit(self, trajectories, dt):
         """
@@ -360,7 +360,7 @@ class TransformerDriftEstimator:
         self.dropout = dropout
         self.model = None
         self.scaler = StandardScaler()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda")
 
     def fit(self, trajectories, dt):
         self.dt = dt

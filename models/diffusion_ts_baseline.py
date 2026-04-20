@@ -81,7 +81,7 @@ class DiffusionTS(TimeSeriesGenerator):
         self.beta_start = config.get("diffusion_beta_start", 0.0001)
         self.beta_end = config.get("diffusion_beta_end", 0.02)
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(config.get("device", "cuda"))
 
         self.betas = None
         self.alphas = None
