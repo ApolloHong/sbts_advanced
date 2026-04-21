@@ -188,6 +188,7 @@ class StaticJumpDetector(JumpDetector):
         self.jump_intensities = None
         self.jump_means = None
         self.jump_stds = None
+        self.reference_sigma = None
         self.n_features = None
     
     def fit(
@@ -258,6 +259,41 @@ class StaticJumpDetector(JumpDetector):
         
         self.is_fitted = True
         return self
+
+    def set_reference_params(
+        self,
+        lambda0: Union[float, np.ndarray],
+        c: Union[float, np.ndarray],
+        gamma: Union[float, np.ndarray],
+        sigma: Optional[Union[float, np.ndarray]] = None,
+    ) -> None:
+        """
+        Override jump sampler parameters with calibrated SBJTS reference values.
+
+        This keeps the detector API unchanged while allowing the three-stage
+        calibration pipeline to provide component-wise Merton jump parameters.
+        """
+        if self.n_features is None:
+            self.n_features = 1
+
+        def per_feature(value, default):
+            if value is None:
+                return np.full(self.n_features, default, dtype=np.float64)
+            arr = np.asarray(value, dtype=np.float64)
+            if arr.ndim == 0:
+                return np.full(self.n_features, float(arr), dtype=np.float64)
+            if arr.size != self.n_features:
+                return np.resize(arr, self.n_features).astype(np.float64)
+            return arr.astype(np.float64)
+
+        self.jump_intensities = np.clip(per_feature(lambda0, 0.0), 0.0, 1000.0)
+        self.jump_means = per_feature(c, 0.0)
+        self.jump_stds = np.maximum(per_feature(gamma, 1e-4), 1e-4)
+        self.reference_sigma = None if sigma is None else np.maximum(per_feature(sigma, 1e-4), 1e-4)
+
+        self.jump_intensity = float(np.mean(self.jump_intensities))
+        self.jump_mean = float(np.mean(self.jump_means))
+        self.jump_std = float(np.mean(self.jump_stds))
     
     def detect(self, data: np.ndarray) -> np.ndarray:
         """
@@ -406,7 +442,8 @@ class StaticJumpDetector(JumpDetector):
             'std': self.jump_std,
             'intensities': self.jump_intensities,
             'means': self.jump_means,
-            'stds': self.jump_stds
+            'stds': self.jump_stds,
+            'reference_sigma': self.reference_sigma
         }
 
 

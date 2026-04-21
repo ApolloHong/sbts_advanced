@@ -29,6 +29,7 @@ from modules.solver import JumpDiffusionEulerSolver
 from modules.feedback import StressFactor
 from modules.drift_neural import LSTMDriftEstimator, get_neural_drift_estimator
 from modules.drift_kernel import KernelDriftEstimator
+from models.calibration import calibrate_all
 
 
 @dataclass
@@ -40,6 +41,10 @@ class TrainingMetrics:
     drift_estimation_time: float = 0.0
     n_jumps_detected: int = 0
     jump_intensity: float = 0.0
+    reference_sigma: Any = None
+    reference_lambda: Any = None
+    reference_c: Any = None
+    reference_gamma: Any = None
     vol_surface_shape: str = ""
     drift_loss_history: List[float] = None
     
@@ -51,6 +56,10 @@ class TrainingMetrics:
             'drift_estimation_time': self.drift_estimation_time,
             'n_jumps_detected': self.n_jumps_detected,
             'jump_intensity': self.jump_intensity,
+            'reference_sigma': self.reference_sigma,
+            'reference_lambda': self.reference_lambda,
+            'reference_c': self.reference_c,
+            'reference_gamma': self.reference_gamma,
             'vol_surface_shape': self.vol_surface_shape,
             'drift_loss_history': self.drift_loss_history
         }
@@ -175,6 +184,55 @@ class JDSBTS(TimeSeriesGenerator):
             print(f"  Jump intensity λ = {self.jump_detector.jump_intensity:.4f}")
             print(f"  Jump mean μ_J = {self.jump_detector.jump_mean:.4f}")
             print(f"  Jump std σ_J = {self.jump_detector.jump_std:.4f}")
+
+        # ========================================
+        # SBJTS Reference Parameter Calibration
+        # ========================================
+        use_sbjts_calibration = self.config.get('use_sbjts_calibration', True)
+        if use_sbjts_calibration:
+            dt = float(np.mean(np.diff(np.asarray(time_grid, dtype=np.float64))))
+            fix_c = bool(self.config.get('sbjts_fix_c', True))
+            if verbose:
+                print("\n[SBJTS] Three-stage reference parameter calibration...")
+
+            sigma_ref, lambda_ref, c_ref, gamma_ref = calibrate_all(
+                data,
+                dt,
+                sbjts_model=self,
+                fix_c=fix_c,
+            )
+            self.sbjts_reference_params = {
+                'sigma': sigma_ref,
+                'lambda0': lambda_ref,
+                'c': c_ref,
+                'gamma': gamma_ref,
+            }
+            if hasattr(self.jump_detector, 'set_reference_params'):
+                self.jump_detector.set_reference_params(
+                    lambda0=lambda_ref,
+                    c=c_ref,
+                    gamma=gamma_ref,
+                    sigma=sigma_ref,
+                )
+            else:
+                self.jump_detector.jump_intensity = float(np.mean(np.asarray(lambda_ref)))
+                self.jump_detector.jump_mean = float(np.mean(np.asarray(c_ref)))
+                self.jump_detector.jump_std = float(np.mean(np.asarray(gamma_ref)))
+
+            self.training_metrics.reference_sigma = sigma_ref
+            self.training_metrics.reference_lambda = lambda_ref
+            self.training_metrics.reference_c = c_ref
+            self.training_metrics.reference_gamma = gamma_ref
+            self.training_metrics.jump_intensity = self.jump_detector.jump_intensity
+
+            if verbose:
+                print(
+                    "  Calibrated P0 params: "
+                    f"σ={np.array2string(np.asarray(sigma_ref), precision=4)}, "
+                    f"λ0={np.array2string(np.asarray(lambda_ref), precision=4)}, "
+                    f"c={np.array2string(np.asarray(c_ref), precision=4)}, "
+                    f"γ={np.array2string(np.asarray(gamma_ref), precision=4)}"
+                )
         
         # ========================================
         # Step 2: Data Purification
@@ -263,6 +321,46 @@ class JDSBTS(TimeSeriesGenerator):
         take = min(history_len, returns.shape[1])
         history[:, -take:, :] = returns[:, -take:, :]
         return history
+
+    def generate_reference_paths(
+        self,
+        n_samples: int,
+        n_steps: int,
+        dt: float,
+        sigma: float,
+        lambda0: float,
+        c: float,
+        gamma: float,
+        x0: Optional[np.ndarray] = None,
+        feature_idx: Optional[int] = None,
+    ) -> np.ndarray:
+        """Generate paths from the Merton reference measure used by SBJTS calibration."""
+        if x0 is None:
+            if self.x0_samples is not None:
+                idx = np.random.choice(len(self.x0_samples), n_samples, replace=True)
+                if feature_idx is None:
+                    x0 = self.x0_samples[idx, 0]
+                else:
+                    x0 = self.x0_samples[idx, feature_idx]
+            else:
+                x0 = np.zeros(n_samples, dtype=np.float64)
+        x0 = np.asarray(x0, dtype=np.float64).reshape(n_samples)
+
+        paths = np.zeros((n_samples, n_steps), dtype=np.float64)
+        paths[:, 0] = x0
+        if n_steps <= 1:
+            return paths
+
+        diffusion = float(sigma) * np.sqrt(dt) * np.random.randn(n_samples, n_steps - 1)
+        jump_counts = np.random.poisson(float(lambda0) * dt, size=(n_samples, n_steps - 1))
+        jump_sizes = np.zeros_like(diffusion)
+        active = jump_counts > 0
+        if np.any(active):
+            counts = jump_counts[active]
+            jump_sizes[active] = float(c) * counts + float(gamma) * np.sqrt(counts) * np.random.randn(counts.size)
+        increments = diffusion + jump_sizes
+        paths[:, 1:] = x0[:, np.newaxis] + np.cumsum(increments, axis=1)
+        return paths
 
     def _generate_with_neural_jumps(
         self,
