@@ -103,6 +103,25 @@ class JDSBTS(TimeSeriesGenerator):
         self.use_neural_drift = config.get('use_neural_drift', True)
         self.drift_type = config.get('drift_estimator', 'lstm')
         self.use_feedback = config.get('use_feedback', False)
+        self.input_type = config.get(
+            'input_type',
+            config.get('data_representation', config.get('input_representation', 'path'))
+        )
+        self.input_is_returns = self.input_type in {'return', 'returns', 'log_return', 'log_returns'}
+        self.generate_returns_from_price = bool(config.get(
+            'generate_returns_from_price',
+            self.input_is_returns
+        ))
+        self.return_generation_use_reference_vol = bool(config.get(
+            'return_generation_use_reference_vol',
+            True
+        ))
+        self.return_drift_scale = float(config.get('return_drift_scale', 1.0))
+        self.return_vol_scale = float(config.get('return_vol_scale', 1.0))
+        self.return_feedback_gamma_scale = float(config.get(
+            'return_feedback_gamma_scale',
+            1.0
+        ))
         
         # Components (initialized during fit)
         self.jump_detector = None
@@ -115,6 +134,7 @@ class JDSBTS(TimeSeriesGenerator):
         self.time_grid = None
         self.n_features = None
         self.x0_samples = None  # Initial conditions from training data
+        self.sbjts_reference_params = None
         
         # Metrics
         self.training_metrics = TrainingMetrics()
@@ -195,8 +215,9 @@ class JDSBTS(TimeSeriesGenerator):
             if verbose:
                 print("\n[SBJTS] Three-stage reference parameter calibration...")
 
+            calibration_data = self._calibration_paths(data)
             sigma_ref, lambda_ref, c_ref, gamma_ref = calibrate_all(
-                data,
+                calibration_data,
                 dt,
                 sbjts_model=self,
                 fix_c=fix_c,
@@ -304,6 +325,31 @@ class JDSBTS(TimeSeriesGenerator):
         
         return self
 
+    def _calibration_paths(self, data: np.ndarray) -> np.ndarray:
+        """
+        Return path-shaped data for jump calibration.
+
+        For log-return inputs, observations are already log-price increments.
+        The SBJTS estimators expect paths and internally difference them, so we
+        prepend zero and cumulatively sum returns into a synthetic log-price path.
+        """
+        if not self.input_is_returns:
+            return data
+        if data.ndim == 2:
+            data = data[:, :, np.newaxis]
+        zeros = np.zeros((data.shape[0], 1, data.shape[2]), dtype=data.dtype)
+        return np.concatenate([zeros, np.cumsum(data, axis=1)], axis=1)
+
+    def _as_per_feature_array(self, value: Any, default: float) -> np.ndarray:
+        if value is None:
+            return np.full(self.n_features, default, dtype=np.float64)
+        arr = np.asarray(value, dtype=np.float64)
+        if arr.ndim == 0:
+            return np.full(self.n_features, float(arr), dtype=np.float64)
+        if arr.size != self.n_features:
+            return np.resize(arr, self.n_features).astype(np.float64)
+        return arr.astype(np.float64)
+
     def _build_neural_jump_history(
         self,
         paths: np.ndarray,
@@ -390,17 +436,15 @@ class JDSBTS(TimeSeriesGenerator):
             drift = self.drift_estimator.predict(t_prev, x_prev)
             vol = self.volatility_calibrator(t_prev, x_prev)
 
-            history = self._build_neural_jump_history(paths, t)
-            jump_mask, jump_sizes = self.jump_detector.sample_jumps_neural(history, dt)
-            jump_sizes = jump_sizes[:, np.newaxis].repeat(n_features, axis=1)
-
             if self.use_feedback:
-                total_jump = np.abs(jump_sizes).sum(axis=1)
-                stress[:, t] = (
-                    stress[:, t - 1] * np.exp(-self.stress_factor.kappa * dt)
-                    + self.stress_factor.gamma * total_jump
-                )
-                vol = vol * np.sqrt(1.0 + stress[:, t])[:, np.newaxis]
+                # Coupled operator splitting: diffusion uses the pre-jump
+                # stress S_{t-1}. The sampled jump then updates both X_t and
+                # S_t inside this same discrete step.
+                vol = vol * np.sqrt(1.0 + stress[:, t - 1])[:, np.newaxis]
+
+            history = self._build_neural_jump_history(paths, t)
+            _, jump_sizes = self.jump_detector.sample_jumps_neural(history, dt)
+            jump_sizes = jump_sizes[:, np.newaxis].repeat(n_features, axis=1)
 
             paths[:, t, :] = (
                 x_prev
@@ -409,9 +453,165 @@ class JDSBTS(TimeSeriesGenerator):
                 + jump_sizes
             )
 
+            if self.use_feedback:
+                total_jump = np.abs(jump_sizes).sum(axis=1)
+                stress[:, t] = (
+                    stress[:, t - 1] * np.exp(-self.stress_factor.kappa * dt)
+                    + self.stress_factor.gamma * total_jump
+                )
+                stress[:, t] = np.minimum(stress[:, t], self.stress_factor.max_stress)
+
         if return_stress and self.use_feedback:
             return paths, stress
         return paths
+
+    def _generate_price_jump_returns(
+        self,
+        x0: Optional[np.ndarray],
+        time_grid: np.ndarray,
+        return_stress: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """
+        Generate log-return windows from a latent log-price jump process.
+
+        The returned observations are one-step log-price increments. Jumps are
+        therefore applied to the latent price process, but evaluation still sees
+        log-return windows with the same shape as the training data.
+        """
+        n_steps = len(time_grid)
+        if x0 is None:
+            n_samples = len(self.x0_samples)
+            idx = np.random.choice(len(self.x0_samples), n_samples, replace=True)
+            x0 = self.x0_samples[idx]
+        else:
+            if x0.ndim == 1:
+                x0 = x0[:, np.newaxis]
+            n_samples = x0.shape[0]
+
+        returns = np.zeros((n_samples, n_steps, self.n_features), dtype=np.float64)
+        stress = np.zeros((n_samples, n_steps), dtype=np.float64)
+
+        if x0 is not None:
+            x0 = np.asarray(x0, dtype=np.float64)
+            if x0.ndim == 1:
+                x0 = x0[:, np.newaxis]
+            if x0.shape[0] == 1 and n_samples > 1:
+                x0 = np.repeat(x0, n_samples, axis=0)
+            if x0.shape == (n_samples, self.n_features):
+                returns[:, 0, :] = x0
+
+        reference_sigma = None
+        if self.sbjts_reference_params is not None:
+            reference_sigma = self._as_per_feature_array(
+                self.sbjts_reference_params.get('sigma'),
+                default=0.0,
+            )
+
+        start_idx = 1 if np.any(returns[:, 0, :]) else 0
+        dW = np.random.randn(n_samples, max(0, n_steps - start_idx), self.n_features)
+
+        for t in range(start_idx, n_steps):
+            if n_steps > 1:
+                if t == 0:
+                    dt = float(time_grid[1] - time_grid[0])
+                    t_prev = float(time_grid[0])
+                else:
+                    dt = float(time_grid[t] - time_grid[t - 1])
+                    t_prev = float(time_grid[t - 1])
+            else:
+                dt = float(self.config.get('dt', 1.0))
+                t_prev = float(time_grid[0]) if len(time_grid) else 0.0
+            if dt <= 0:
+                raise ValueError("time_grid must be strictly increasing")
+
+            prev_return = returns[:, t - 1, :] if t > 0 else np.zeros((n_samples, self.n_features))
+            history = returns[:, :t, :] if t > 0 else None
+
+            try:
+                drift = self.drift_estimator.predict(t_prev, prev_return, history=history)
+            except TypeError:
+                drift = self.drift_estimator.predict(t_prev, prev_return)
+            drift = drift * self.return_drift_scale
+
+            if self.return_generation_use_reference_vol and reference_sigma is not None:
+                vol = np.broadcast_to(reference_sigma, (n_samples, self.n_features)).copy()
+            else:
+                vol = self.volatility_calibrator(t_prev, prev_return)
+            vol = vol * self.return_vol_scale
+
+            if self.use_feedback:
+                # Coupled operator splitting: the continuous return shock uses
+                # S_{t-1}; the price jump sampled below is applied to returns
+                # and to the transient stress state in the same time index.
+                prev_stress = stress[:, t - 1] if t > 0 else np.zeros(n_samples, dtype=np.float64)
+                vol = vol * np.sqrt(1.0 + prev_stress)[:, np.newaxis]
+
+            if self.use_neural_jumps and hasattr(self.jump_detector, 'sample_jumps_neural'):
+                neural_history = self._build_neural_jump_history_from_returns(returns, t)
+                _, jump_1d = self.jump_detector.sample_jumps_neural(neural_history, dt)
+                jump_step = np.repeat(np.asarray(jump_1d)[:, np.newaxis], self.n_features, axis=1)
+            else:
+                _, jump_sizes = self.jump_detector.sample_jumps(n_samples, 1, dt)
+                jump_step = self._coerce_jump_step(jump_sizes, n_samples, self.n_features)
+
+            noise_idx = t - start_idx
+            returns[:, t, :] = (
+                drift * dt
+                + vol * np.sqrt(dt) * dW[:, noise_idx, :]
+                + jump_step
+            )
+
+            if self.use_feedback:
+                total_jump = np.abs(jump_step).sum(axis=1)
+                feedback_gamma = self.stress_factor.gamma
+                if self.generate_returns_from_price:
+                    feedback_gamma *= self.return_feedback_gamma_scale
+                stress[:, t] = (
+                    prev_stress * np.exp(-self.stress_factor.kappa * dt)
+                    + feedback_gamma * total_jump
+                )
+                stress[:, t] = np.minimum(stress[:, t], self.stress_factor.max_stress)
+
+        if return_stress:
+            return returns, stress
+        return returns
+
+    def _coerce_jump_step(
+        self,
+        jump_sizes: np.ndarray,
+        n_samples: int,
+        n_features: int,
+    ) -> np.ndarray:
+        js = np.asarray(jump_sizes, dtype=np.float64)
+        if js.ndim == 3:
+            js = js[:, 0, :]
+        elif js.ndim == 2:
+            if js.shape == (n_samples, n_features):
+                pass
+            elif js.shape[0] == n_samples and js.shape[1] == 1:
+                js = np.repeat(js, n_features, axis=1)
+            elif js.shape[0] == n_samples:
+                reps = int(np.ceil(n_features / js.shape[1]))
+                js = np.tile(js, (1, reps))[:, :n_features]
+            else:
+                js = np.broadcast_to(js, (n_samples, n_features))
+        elif js.ndim == 1:
+            js = np.repeat(js.reshape(n_samples, 1), n_features, axis=1)
+        else:
+            js = np.full((n_samples, n_features), float(js))
+        if js.shape != (n_samples, n_features):
+            js = np.broadcast_to(js, (n_samples, n_features)).copy()
+        return js
+
+    def _build_neural_jump_history_from_returns(self, returns: np.ndarray, step_idx: int) -> np.ndarray:
+        history_len = getattr(self.jump_detector, 'seq_len', 10)
+        n_samples, _, n_features = returns.shape
+        history = np.zeros((n_samples, history_len, n_features), dtype=np.float64)
+        if step_idx <= 0:
+            return history
+        take = min(history_len, step_idx)
+        history[:, -take:, :] = returns[:, step_idx - take:step_idx, :]
+        return history
     
     def generate(
         self,
@@ -465,6 +665,13 @@ class JDSBTS(TimeSeriesGenerator):
             x0 = np.repeat(x0, n_samples, axis=0)
         elif x0.ndim != 2 or x0.shape[0] != n_samples:
             raise ValueError("x0 batch size must be 1 or match n_samples")
+
+        if self.generate_returns_from_price:
+            return self._generate_price_jump_returns(
+                x0=x0,
+                time_grid=time_grid,
+                return_stress=return_stress,
+            )
         
         # Define drift function
         def drift_fn(t, x, history=None):
@@ -543,8 +750,8 @@ class JDSBTSF(JDSBTS):
         
         Args:
             config: Configuration dictionary with additional keys:
-                - feedback_kappa: Mean reversion speed (default: 5.0)
-                - feedback_gamma: Jump impact multiplier (default: 0.5)
+                - feedback_kappa: Mean reversion speed (default: 0.8)
+                - feedback_gamma: Jump impact multiplier (default: 1.0)
         """
         # Force feedback to be enabled
         config = config.copy()
@@ -552,8 +759,8 @@ class JDSBTSF(JDSBTS):
         
         super().__init__(config)
         
-        self.kappa = config.get('feedback_kappa', 5.0)
-        self.gamma = config.get('feedback_gamma', 0.5)
+        self.kappa = config.get('feedback_kappa', 0.8)
+        self.gamma = config.get('feedback_gamma', 1.0)
     
     def fit(
         self,

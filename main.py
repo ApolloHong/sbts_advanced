@@ -70,9 +70,9 @@ DEFAULT_CONFIG = {
     # JD-SBTS settings
     'use_neural_jumps': False,
     'use_feedback': True,
-    'jump_threshold_std': 5.0,
-    'feedback_kappa': 5.0,
-    'feedback_gamma': 0.5,
+    'jump_threshold_std': 3.0,
+    'feedback_kappa': 0.8,
+    'feedback_gamma': 1.0,
     
     # Drift estimation
     'drift_estimator': 'lstm',
@@ -461,6 +461,10 @@ def run_experiment_new(config: Dict[str, Any]) -> Dict[str, Any]:
             # Get model config
             model_config = modules['get_default_config'](model_name)
             model_config.update(config)  # Override with experiment config
+            if config.get('synthetic_return_type') == 'log_returns' or config.get('data_type') == 'etf':
+                model_config['input_type'] = 'log_return'
+                if _normalize_model_name(model_name) in CONDITIONED_X0_MODELS:
+                    model_config['generate_returns_from_price'] = True
             if _normalize_model_name(model_name) == 'transformer_ar':
                 required_len = max(1, data.shape[1] - 1)
                 current_max_len = model_config.get('transformer_ar_max_seq_len')

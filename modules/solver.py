@@ -139,16 +139,10 @@ def _euler_maruyama_feedback_numba(
             dt = time_grid[t] - time_grid[t-1]
             sqrt_dt = np.sqrt(dt)
             
-            # Compute total jump magnitude at this step
-            total_jump = 0.0
-            for k in range(n_features):
-                total_jump += np.abs(jump_sizes[i, t-1, k])
-            
-            # Update stress factor: S_t = S_{t-1} * exp(-κ*dt) + γ * |dJ|
-            stress[i, t] = stress[i, t-1] * np.exp(-kappa * dt) + gamma * total_jump
-            
-            # Effective volatility multiplier: √(1 + S_t)
-            vol_multiplier = np.sqrt(1.0 + stress[i, t])
+            # Coupled operator splitting:
+            # the continuous diffusion uses pre-jump stress S_{t-1}; the
+            # same jump realization then updates both X_t and S_t.
+            vol_multiplier = np.sqrt(1.0 + stress[i, t-1])
             
             for k in range(n_features):
                 drift = drift_values[i, t-1, k]
@@ -160,6 +154,11 @@ def _euler_maruyama_feedback_numba(
                     vol * sqrt_dt * dW[i, t-1, k] +
                     jump_sizes[i, t-1, k]
                 )
+
+            total_jump = 0.0
+            for k in range(n_features):
+                total_jump += np.abs(jump_sizes[i, t-1, k])
+            stress[i, t] = stress[i, t-1] * np.exp(-kappa * dt) + gamma * total_jump
     
     return paths, stress
 
@@ -260,11 +259,10 @@ if TORCH_AVAILABLE:
                 else:
                     jump_sizes = torch.zeros(n_samples, n_features, device=self.device)
                 
-                # Update stress factor if using feedback
+                # Coupled operator splitting: diffusion uses S_{t-1};
+                # the sampled jump updates X_t and S_t in the same step.
                 if self.use_feedback:
-                    total_jump = torch.abs(jump_sizes).sum(dim=-1)
-                    stress[:, t] = stress[:, t-1] * torch.exp(-self.kappa * dt) + self.gamma * total_jump
-                    vol_multiplier = torch.sqrt(1.0 + stress[:, t]).unsqueeze(-1)
+                    vol_multiplier = torch.sqrt(1.0 + stress[:, t-1]).unsqueeze(-1)
                     vol = vol * vol_multiplier
                 
                 # Euler-Maruyama update
@@ -274,6 +272,10 @@ if TORCH_AVAILABLE:
                     vol * sqrt_dt * dW[:, t-1, :] +
                     jump_sizes
                 )
+
+                if self.use_feedback:
+                    total_jump = torch.abs(jump_sizes).sum(dim=-1)
+                    stress[:, t] = stress[:, t-1] * torch.exp(-self.kappa * dt) + self.gamma * total_jump
             
             if return_stress and self.use_feedback:
                 return paths, stress
@@ -305,15 +307,16 @@ class JumpDiffusionEulerSolver(SDESolver):
         Args:
             config: Configuration with keys:
                 - use_feedback: Whether to use feedback mechanism (default: True)
-                - feedback_kappa: Mean reversion speed (default: 5.0)
-                - feedback_gamma: Jump impact multiplier (default: 0.5)
+                - feedback_kappa: Mean reversion speed (default: 0.8)
+                - feedback_gamma: Jump impact multiplier (default: 1.0)
                 - solver_backend: 'numba' or 'torch' (default: 'numba')
         """
         super().__init__(config)
         
         self.use_feedback = config.get('use_feedback', True)
-        self.kappa = config.get('feedback_kappa', 5.0)
-        self.gamma = config.get('feedback_gamma', 0.5)
+        self.kappa = config.get('feedback_kappa', 0.8)
+        self.gamma = config.get('feedback_gamma', 1.0)
+        self.max_stress = config.get('feedback_max_stress', 10.0)
         self.backend = config.get('solver_backend', 'numba')
         
         # Initialize PyTorch solver if needed
@@ -394,12 +397,10 @@ class JumpDiffusionEulerSolver(SDESolver):
                 jump_step = np.zeros((n_samples, n_features), dtype=np.float64)
 
             if self.use_feedback:
-                total_jump = np.abs(jump_step).sum(axis=1)
-                stress[:, t] = (
-                    stress[:, t - 1] * np.exp(-self.kappa * dt)
-                    + self.gamma * total_jump
-                )
-                vol = vol * np.sqrt(1.0 + stress[:, t])[:, np.newaxis]
+                # Coupled operator splitting: the diffusion increment is
+                # evaluated with S_{t-1}; jump_step then updates X_t and S_t
+                # synchronously below.
+                vol = vol * np.sqrt(1.0 + stress[:, t - 1])[:, np.newaxis]
 
             paths[:, t, :] = (
                 x_prev
@@ -407,6 +408,14 @@ class JumpDiffusionEulerSolver(SDESolver):
                 + vol * np.sqrt(dt) * dW[:, t - 1, :]
                 + jump_step
             )
+
+            if self.use_feedback:
+                total_jump = np.abs(jump_step).sum(axis=1)
+                stress[:, t] = (
+                    stress[:, t - 1] * np.exp(-self.kappa * dt)
+                    + self.gamma * total_jump
+                )
+                stress[:, t] = np.minimum(stress[:, t], self.max_stress)
 
         if return_stress:
             return paths, stress

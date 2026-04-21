@@ -169,10 +169,16 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
     if model_type in ['jd_sbts', 'jd_sbts_f', 'jd_sbts_neural', 'jd_sbts_f_neural']:
         base_config.update({
             # Jump detection
-            'jump_threshold_std': 5.0,
+            'jump_threshold_std': 3.0,
             'jump_rolling_window': 20,
             'jump_size_scale': 1.0,
             'jump_size_clip': None,
+            'input_type': 'path',
+            'generate_returns_from_price': False,
+            'return_generation_use_reference_vol': True,
+            'return_drift_scale': 0.35,
+            'return_vol_scale': 1.2,
+            'return_feedback_gamma_scale': 1.0,
             'use_sbjts_calibration': True,
             'sbjts_fix_c': True,
             'sbjts_threshold_r': 3.0,
@@ -184,6 +190,8 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
             'neural_jump_epochs': 30,
             'neural_jump_lr': 0.001,
             'neural_jump_seq_len': 10,
+            'neural_jump_calibrate_intensity': True,
+            'neural_jump_intensity_cap_multiplier': 2.0,
             'focal_alpha': 0.25,
             'focal_gamma': 2.0,
             
@@ -202,8 +210,8 @@ def get_default_config(model_type: str) -> Dict[str, Any]:
             
             # Feedback (for _f variants)
             'use_feedback': '_f' in model_type,
-            'feedback_kappa': 5.0,
-            'feedback_gamma': 0.5,
+            'feedback_kappa': 0.8,
+            'feedback_gamma': 1.0,
             
             # Solver
             'solver_backend': 'numba',

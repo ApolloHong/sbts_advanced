@@ -179,6 +179,11 @@ class StaticJumpDetector(JumpDetector):
         
         self.threshold = config.get('jump_threshold_std', 4.0)
         self.rolling_window = config.get('jump_rolling_window', 20)
+        self.input_type = config.get(
+            'input_type',
+            config.get('data_representation', config.get('input_representation', 'path'))
+        )
+        self.input_is_returns = self.input_type in {'return', 'returns', 'log_return', 'log_returns'}
         self.jump_size_scale = float(config.get('jump_size_scale', 1.0))
         self.jump_size_clip = config.get('jump_size_clip', None)
         if self.jump_size_clip is not None:
@@ -219,8 +224,9 @@ class StaticJumpDetector(JumpDetector):
         if dt <= 0:
             raise ValueError("time_grid must be strictly increasing for jump calibration")
         
-        # Compute returns
-        returns = np.diff(data, axis=1)
+        # Log-return inputs are already price increments; path inputs need differencing.
+        returns = data if self.input_is_returns else np.diff(data, axis=1)
+        n_intervals = returns.shape[1]
         
         # Initialize parameter arrays
         self.jump_intensities = np.zeros(n_features)
@@ -240,7 +246,7 @@ class StaticJumpDetector(JumpDetector):
             
             # Estimate parameters
             n_jumps = np.sum(jump_mask)
-            total_time = n_samples * (seq_len - 1) * dt
+            total_time = n_samples * n_intervals * dt
             
             self.jump_intensities[k] = n_jumps / total_time if total_time > 0 else 0.0
             
@@ -313,11 +319,10 @@ class StaticJumpDetector(JumpDetector):
         
         n_samples, seq_len, n_features = data.shape
         
-        # Compute returns
-        returns = np.diff(data, axis=1)
+        returns = data if self.input_is_returns else np.diff(data, axis=1)
         
         # Detect for each feature
-        jump_mask = np.zeros((n_samples, seq_len - 1, n_features), dtype=bool)
+        jump_mask = np.zeros((n_samples, returns.shape[1], n_features), dtype=bool)
         
         for k in range(n_features):
             jump_mask[:, :, k] = _detect_jumps_threshold_numba(
@@ -326,9 +331,12 @@ class StaticJumpDetector(JumpDetector):
                 self.rolling_window
             )
         
-        # Pad to match original shape
-        jump_mask_full = np.zeros((n_samples, seq_len, n_features), dtype=bool)
-        jump_mask_full[:, 1:, :] = jump_mask
+        if self.input_is_returns:
+            jump_mask_full = jump_mask
+        else:
+            # Pad to match path shape.
+            jump_mask_full = np.zeros((n_samples, seq_len, n_features), dtype=bool)
+            jump_mask_full[:, 1:, :] = jump_mask
         
         if original_ndim == 2:
             return jump_mask_full[:, :, 0]
@@ -354,7 +362,8 @@ class StaticJumpDetector(JumpDetector):
         
         n_samples, seq_len, n_features = data.shape
         
-        # Detect jumps
+        # Detect jumps. For return inputs, the mask is aligned with data itself;
+        # for path inputs, the mask marks path points after contaminated increments.
         jump_mask = self.detect(data)
         
         # Interpolate for each feature
@@ -579,6 +588,8 @@ class NeuralJumpDetector(JumpDetector):
         self.focal_alpha = config.get('focal_alpha', 0.25)
         self.focal_gamma = config.get('focal_gamma', 2.0)
         self.verbose = config.get('verbose', True)
+        self.use_calibrated_intensity = bool(config.get('neural_jump_calibrate_intensity', True))
+        self.intensity_cap_multiplier = float(config.get('neural_jump_intensity_cap_multiplier', 5.0))
         
         self.device = torch.device(config.get('device', 'cuda'))
         
@@ -586,6 +597,8 @@ class NeuralJumpDetector(JumpDetector):
         self.intensity_net = None
         self.static_detector = None
         self.n_features = None
+        self.training_intensity_mean = None
+        self.calibrated_intensity_scale = 1.0
     
     def fit(
         self,
@@ -703,8 +716,36 @@ class NeuralJumpDetector(JumpDetector):
                 print(f"  [Neural Jump] Epoch {epoch+1}/{self.epochs}, Loss: {avg_loss:.4f}")
         
         self.intensity_net.eval()
+        with torch.no_grad():
+            raw_train_intensity = self.intensity_net(X)[:, -1, 0]
+            train_mean = float(raw_train_intensity.mean().detach().cpu().item())
+        if np.isfinite(train_mean) and train_mean > 1e-8:
+            self.training_intensity_mean = train_mean
+            self.calibrated_intensity_scale = float(self.jump_intensity / train_mean)
         self.is_fitted = True
         return self
+
+    def set_reference_params(
+        self,
+        lambda0: Union[float, np.ndarray],
+        c: Union[float, np.ndarray],
+        gamma: Union[float, np.ndarray],
+        sigma: Optional[Union[float, np.ndarray]] = None,
+    ) -> None:
+        """Apply SBJTS-calibrated jump parameters to neural generation."""
+        lambda_arr = np.asarray(lambda0, dtype=np.float64)
+        c_arr = np.asarray(c, dtype=np.float64)
+        gamma_arr = np.asarray(gamma, dtype=np.float64)
+
+        self.jump_intensity = float(np.mean(lambda_arr))
+        self.jump_mean = float(np.mean(c_arr))
+        self.jump_std = float(max(np.mean(gamma_arr), 1e-4))
+
+        if self.static_detector is not None and hasattr(self.static_detector, 'set_reference_params'):
+            self.static_detector.set_reference_params(lambda0=lambda0, c=c, gamma=gamma, sigma=sigma)
+
+        if self.training_intensity_mean is not None and self.training_intensity_mean > 1e-8:
+            self.calibrated_intensity_scale = float(self.jump_intensity / self.training_intensity_mean)
     
     def detect(self, data: np.ndarray) -> np.ndarray:
         """
@@ -776,8 +817,17 @@ class NeuralJumpDetector(JumpDetector):
         """
         n_samples = history.shape[0]
         
-        # Predict intensity
+        # Predict intensity and normalize its average level to the calibrated
+        # SBJTS lambda. The neural network keeps relative time variation, while
+        # Stage 2/3 controls the unconditional jump frequency.
         intensity = self.predict_intensity(history)
+        if self.use_calibrated_intensity:
+            if self.training_intensity_mean is not None:
+                intensity = intensity * self.calibrated_intensity_scale
+            else:
+                intensity = np.full(n_samples, self.jump_intensity)
+            cap = max(self.jump_intensity * self.intensity_cap_multiplier, self.jump_intensity)
+            intensity = np.clip(intensity, 0.0, cap)
         
         # Sample from Poisson process with predicted intensity
         jump_probs = 1 - np.exp(-intensity * dt)

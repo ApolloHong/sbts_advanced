@@ -17,7 +17,11 @@ Author: Manus AI
 from modules.volatility import LocalVolatilityCalibrator
 from modules.jumps import StaticJumpDetector, NeuralJumpDetector
 from modules.solver import JumpDiffusionEulerSolver
-from modules.feedback import StressFactor, FeedbackConfig
+from modules.feedback import (
+    StressFactor,
+    FeedbackConfig,
+    simulate_coupled_jump_diffusion_feedback,
+)
 from modules.drift_neural import LSTMDriftEstimator, TransformerDriftEstimator
 from modules.drift_kernel import KernelDriftEstimator
 
@@ -35,6 +39,7 @@ __all__ = [
     # Feedback
     'StressFactor',
     'FeedbackConfig',
+    'simulate_coupled_jump_diffusion_feedback',
     
     # Drift
     'LSTMDriftEstimator',

@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 
+from models.sbts_variants import JDSBTS
 from models.calibration import (
     calibrate_all,
     calibrate_lambda_qv,
@@ -39,6 +40,31 @@ class DummySBJTSModel:
         if x0 is not None:
             paths = paths + np.asarray(x0).reshape(-1, 1)
         return paths
+
+
+class ZeroDrift:
+    def predict(self, t, x, history=None):
+        return np.zeros_like(x)
+
+
+class ConstantVol:
+    def __init__(self, vol):
+        self.vol = vol
+
+    def __call__(self, t, x):
+        return np.full_like(x, self.vol, dtype=np.float64)
+
+
+class NoJumpDetector:
+    jump_intensity = 0.0
+    jump_mean = 0.0
+    jump_std = 0.0
+
+    def sample_jumps(self, n_samples, n_steps, dt):
+        return (
+            np.zeros((n_samples, n_steps), dtype=bool),
+            np.zeros((n_samples, n_steps), dtype=np.float64),
+        )
 
 
 class SBJTSCalibrationTests(unittest.TestCase):
@@ -101,6 +127,39 @@ class SBJTSCalibrationTests(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(value)))
         self.assertEqual(c, 0.0)
         self.assertGreater(lambda0, 0.0)
+
+    def test_price_jump_return_generation_does_not_return_cumulative_path(self):
+        rng = np.random.default_rng(123)
+        data = rng.normal(0.0, 0.01, size=(80, 24, 1))
+        model = JDSBTS(
+            {
+                "input_type": "log_return",
+                "generate_returns_from_price": True,
+                "return_generation_use_reference_vol": True,
+                "use_feedback": False,
+            }
+        )
+        model.is_fitted = True
+        model.n_features = 1
+        model.time_grid = np.arange(data.shape[1], dtype=np.float64)
+        model.x0_samples = data[:, 0, :].copy()
+        model.drift_estimator = ZeroDrift()
+        model.volatility_calibrator = ConstantVol(0.01)
+        model.jump_detector = NoJumpDetector()
+        model.solver = None
+        model.sbjts_reference_params = {"sigma": np.array([0.01])}
+
+        np.random.seed(321)
+        generated = model.generate(
+            n_samples=4000,
+            n_steps=data.shape[1],
+            x0=np.zeros((4000, 1), dtype=np.float64),
+        )
+
+        self.assertEqual(generated.shape, (4000, data.shape[1], 1))
+        early_std = float(np.std(generated[:, 1, 0]))
+        terminal_std = float(np.std(generated[:, -1, 0]))
+        self.assertLess(abs(terminal_std - early_std), 0.003)
 
 
 if __name__ == "__main__":
