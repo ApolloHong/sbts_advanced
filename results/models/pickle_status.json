@@ -1,0 +1,7 @@
+{
+  "jd_sbts": "/home/wan/psc/sbts_advanced/results/models/jd_sbts.pkl",
+  "jd_sbts_f": "/home/wan/psc/sbts_advanced/results/models/jd_sbts_f.pkl",
+  "jd_sbts_neural": "/home/wan/psc/sbts_advanced/results/models/jd_sbts_neural.pkl",
+  "lightsb": "/home/wan/psc/sbts_advanced/results/models/lightsb.pkl",
+  "rnn": "/home/wan/psc/sbts_advanced/results/models/rnn.pkl"
+}

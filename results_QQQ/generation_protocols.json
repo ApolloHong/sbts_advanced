@@ -1,0 +1,9 @@
+{
+  "jd_sbts": "shared_x0",
+  "jd_sbts_f": "shared_x0",
+  "jd_sbts_neural": "shared_x0",
+  "lightsb": "shared_seed_only",
+  "timegan": "shared_seed_only",
+  "diffusion_ts": "shared_seed_only",
+  "numba_sb": "shared_seed_only"
+}

@@ -1,0 +1,8 @@
+,generation_protocol,fairness_note
+diffusion_ts,shared_seed_only,"Unconditional generation; fairness comes from shared training data, shared eval subset, and reset RNG seed."
+jd_sbts,shared_x0,All samples use the same real initial states from the shared evaluation subset.
+jd_sbts_f,shared_x0,All samples use the same real initial states from the shared evaluation subset.
+jd_sbts_neural,shared_x0,All samples use the same real initial states from the shared evaluation subset.
+lightsb,shared_seed_only,"Window-level bridge model; its x0 is flattened latent noise for the full window, not a real first-step state."
+numba_sb,shared_seed_only,"Unconditional generation; fairness comes from shared training data, shared eval subset, and reset RNG seed."
+timegan,shared_seed_only,"Unconditional generation; fairness comes from shared training data, shared eval subset, and reset RNG seed."

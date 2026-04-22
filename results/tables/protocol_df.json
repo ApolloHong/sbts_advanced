@@ -1,0 +1,49 @@
+{
+  "schema":{
+    "fields":[
+      {
+        "name":"index",
+        "type":"string"
+      },
+      {
+        "name":"generation_protocol",
+        "type":"string"
+      },
+      {
+        "name":"fairness_note",
+        "type":"string"
+      }
+    ],
+    "primaryKey":[
+      "index"
+    ],
+    "pandas_version":"1.4.0"
+  },
+  "data":[
+    {
+      "index":"jd_sbts",
+      "generation_protocol":"shared_x0",
+      "fairness_note":"All samples use the same real initial states from the shared evaluation subset."
+    },
+    {
+      "index":"jd_sbts_f",
+      "generation_protocol":"shared_x0",
+      "fairness_note":"All samples use the same real initial states from the shared evaluation subset."
+    },
+    {
+      "index":"jd_sbts_neural",
+      "generation_protocol":"shared_x0",
+      "fairness_note":"All samples use the same real initial states from the shared evaluation subset."
+    },
+    {
+      "index":"lightsb",
+      "generation_protocol":"shared_seed_only",
+      "fairness_note":"Window-level bridge model; its x0 is flattened latent noise for the full window, not a real first-step state."
+    },
+    {
+      "index":"rnn",
+      "generation_protocol":"shared_prefix_len_1",
+      "fairness_note":"All samples use the same real prefix windows of length 1 from the shared evaluation subset."
+    }
+  ]
+}

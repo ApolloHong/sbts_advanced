@@ -1,0 +1,9 @@
+{
+  "jd_sbts": "/home/wan/psc/sbts_advanced/results_QQQ/models/jd_sbts.pkl",
+  "jd_sbts_f": "/home/wan/psc/sbts_advanced/results_QQQ/models/jd_sbts_f.pkl",
+  "jd_sbts_neural": "/home/wan/psc/sbts_advanced/results_QQQ/models/jd_sbts_neural.pkl",
+  "lightsb": "/home/wan/psc/sbts_advanced/results_QQQ/models/lightsb.pkl",
+  "timegan": "/home/wan/psc/sbts_advanced/results_QQQ/models/timegan.pkl",
+  "diffusion_ts": "/home/wan/psc/sbts_advanced/results_QQQ/models/diffusion_ts.pkl",
+  "numba_sb": "/home/wan/psc/sbts_advanced/results_QQQ/models/numba_sb.pkl"
+}

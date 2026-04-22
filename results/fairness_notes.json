@@ -1,0 +1,7 @@
+{
+  "jd_sbts": "All samples use the same real initial states from the shared evaluation subset.",
+  "jd_sbts_f": "All samples use the same real initial states from the shared evaluation subset.",
+  "jd_sbts_neural": "All samples use the same real initial states from the shared evaluation subset.",
+  "lightsb": "Window-level bridge model; its x0 is flattened latent noise for the full window, not a real first-step state.",
+  "rnn": "All samples use the same real prefix windows of length 1 from the shared evaluation subset."
+}

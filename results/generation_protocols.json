@@ -1,0 +1,7 @@
+{
+  "jd_sbts": "shared_x0",
+  "jd_sbts_f": "shared_x0",
+  "jd_sbts_neural": "shared_x0",
+  "lightsb": "shared_seed_only",
+  "rnn": "shared_prefix_len_1"
+}

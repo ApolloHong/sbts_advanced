@@ -1,0 +1,9 @@
+{
+  "jd_sbts": "jd_sbts",
+  "jd_sbts_f": "jd_sbts_f",
+  "jd_sbts_neural": "jd_sbts_neural",
+  "lightsb": "lightsb",
+  "timegan": "timegan",
+  "diffusion_ts": "diffusion_ts",
+  "numba_sb": "numba_sb"
+}
